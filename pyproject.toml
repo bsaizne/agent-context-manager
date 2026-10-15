@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-  { name = "Agent Context Manager Contributors" }
+  { name = "bsaizne" }
 ]
 keywords = ["agent", "context", "cli", "handoff", "markdown"]
 classifiers = [

@@ -1,54 +1,54 @@
 # Agent Context Manager
 
+**简体中文** | [English](README.en.md)
+
 [![tests](https://github.com/bsaizne/agent-context-manager/actions/workflows/tests.yml/badge.svg)](https://github.com/bsaizne/agent-context-manager/actions/workflows/tests.yml)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)
 
-A local, file-based way to hand a project from one AI coding agent conversation to the
-next - without keeping a transcript.
+一个纯本地、基于文件的方式，把一个项目从一段 AI 编程对话交接给下一段 —— 不需要保留聊天记录。
 
-## What is Agent Context Manager?
+## Agent Context Manager 是什么？
 
-Agent Context Manager is a local CLI for handing off project state between AI coding agent conversations. It stores the minimum useful project memory in Markdown files under each project's `.agent/` directory.
+Agent Context Manager 是一个本地 CLI，用来在 AI 编程对话之间交接项目状态。它把「继续工作所需的最小项目记忆」写进每个项目自己的 `.agent/` 目录下的 Markdown 文件。
 
-It does not save full chat logs. It preserves current state, tasks, decisions, changes, and navigation hints so a new agent can continue without reconstructing the whole conversation.
+它不保存完整聊天记录。它保留的是当前状态、任务、决策、变更和导航线索，让新的 Agent 不必把之前的对话重新拼一遍就能接着干。
 
-## Why?
+## 为什么需要它？
 
-Long agent conversations eventually hit context limits. The useful handoff is rarely the full transcript; it is the current task, what is already done, what is blocked, where the relevant files live, and what constraints must be respected.
+长对话迟早会撞上上下文上限。真正有用的交接内容很少是完整转写，而是：当前在做什么、已经做完什么、卡在哪、相关文件在哪、有哪些约束不能违反。
 
-Agent Context Manager keeps that information short, local, and project-scoped.
+Agent Context Manager 就是把这些信息保持得短、留在本地、并且只属于当前项目。
 
-## Requirements
+## 环境要求
 
-- Python 3.11 or newer. The CLI needs only the standard library plus Typer and Rich.
-- Git is optional; when present, checkpoints record `git status` and recent commits.
-- The Windows GUI needs PySide6 6.7+ and Windows 10 1903 or newer (Qt links against the
-  OS-provided ICU, so the ICU runtime is never bundled).
-- macOS and Linux are supported for the CLI; the GUI is Windows-only today.
+- Python 3.11 或更高版本。CLI 只依赖标准库加上 Typer 和 Rich。
+- Git 是可选的；检测到 Git 时，checkpoint 会记录 `git status` 和最近的提交。
+- Windows 图形界面需要 PySide6 6.7+ 和 Windows 10 1903 或更高版本（Qt 链接系统自带的 ICU，所以 ICU 运行库永远不会被打进产物里）。
+- CLI 支持 macOS 和 Linux；图形界面目前仅限 Windows。
 
-## Installation
+## 安装
 
-Development install:
+开发模式安装：
 
 ```bash
 pip install -e .
 ```
 
-Optional development tools:
+可选的开发工具：
 
 ```bash
 pip install -e ".[test,package]"
 ```
 
-After installation:
+安装完成后：
 
 ```bash
 agent-context --help
 ```
 
-## Quick Start
+## 快速开始
 
 ```bash
 cd my-project
@@ -57,34 +57,34 @@ agent-context status
 agent-context resume
 ```
 
-When context is getting large:
+当对话开始变长时：
 
 ```bash
 agent-context checkpoint
 ```
 
-In a fresh agent conversation:
+在新的一段 Agent 对话里：
 
 ```bash
 agent-context resume
 ```
 
-## Commands
+## 命令
 
 ### init
 
-Creates `.agent/` and the initial Markdown protocol files:
+创建 `.agent/` 目录和最初的 Markdown 协议文件：
 
 ```bash
 agent-context init
 agent-context init /path/to/project
 ```
 
-If `AGENTS.md` already exists, it is not overwritten.
+如果 `AGENTS.md` 已经存在，它不会被覆盖。
 
 ### status
 
-Shows context file presence, current phase, current task, Git detection, modified file count, last checkpoint, and TODO counts:
+显示上下文文件是否存在、当前阶段、当前任务、Git 检测结果、被修改文件数量、最后一次 checkpoint，以及待办数量：
 
 ```bash
 agent-context status
@@ -92,17 +92,17 @@ agent-context status
 
 ### checkpoint
 
-Refreshes `.agent/STATE.md` last-updated timestamp, records a lightweight archive checkpoint, updates `.agent/CHANGELOG.md`, and summarizes Git status when available:
+刷新 `.agent/STATE.md` 的更新时间、记录一份轻量归档、更新 `.agent/CHANGELOG.md`，并在有 Git 时汇总 Git 状态：
 
 ```bash
 agent-context checkpoint
 ```
 
-It only writes inside `.agent/`.
+它只会写入 `.agent/` 目录内部。
 
 ### resume
 
-Prints the minimal resume context. By default it reads only `.agent/STATE.md` and `.agent/TODO.md`:
+打印最小恢复上下文。默认只读取 `.agent/STATE.md` 和 `.agent/TODO.md`：
 
 ```bash
 agent-context resume
@@ -111,7 +111,7 @@ agent-context resume --prompt
 
 ### doctor
 
-Checks Python version, project setup, context files, `AGENTS.md`, Git availability, UTF-8 encoding, and project isolation:
+检查 Python 版本、项目结构、上下文文件、`AGENTS.md`、Git 是否可用、UTF-8 编码以及项目隔离：
 
 ```bash
 agent-context doctor
@@ -119,23 +119,17 @@ agent-context doctor
 
 ### repair
 
-Rewrites `STATE.md` and `TODO.md` into the protocol structure **without losing content**. It
-adds missing required and optional sections, merges duplicated sections (both blocks are
-kept and marked), and restores a missing top-level `# TODO` heading:
+把 `STATE.md` 和 `TODO.md` 重写成协议结构，**并且不丢内容**。它会补齐缺失的必需/可选章节、合并重复章节（两段内容都会保留并标记），并恢复缺失的顶层 `# TODO` 标题：
 
 ```bash
 agent-context repair
 ```
 
-Run it when a context file has been rewritten by hand or by an agent and `status` /
-`resume` / `checkpoint` start failing with `STATE.md needs attention`. It also restores a
-missing top-level `# TODO` heading and merges duplicated `##` sections in `TODO.md`
-(no content is lost). The same action is available in the GUI from the Doctor page and
-from the "STATE.md needs repair" card on Overview.
+当上下文文件被手工或 Agent 重写，`status` / `resume` / `checkpoint` 开始报 `STATE.md needs attention` 时就用它。它还会补回缺失的顶层 `# TODO` 标题，并合并 `TODO.md` 里重复的 `##` 章节（内容不会丢失）。图形界面的 Doctor 页和概览页的「STATE.md 需要修复」卡片提供同样功能。
 
 ### archive
 
-Lists archived checkpoints without restoring or overwriting current state:
+列出归档的 checkpoint，不会恢复或覆盖当前状态：
 
 ```bash
 agent-context archive
@@ -144,55 +138,55 @@ agent-context archive --show 1
 
 ### config
 
-Shows and creates local user-level config at `~/.agent-context/config.json`:
+显示并创建本地用户级配置 `~/.agent-context/config.json`：
 
 ```bash
 agent-context config
 ```
 
-For tests or sandboxed runs, set `AGENT_CONTEXT_CONFIG_DIR` to write `config.json` somewhere else.
+测试或沙箱运行时，可以用 `AGENT_CONTEXT_CONFIG_DIR` 把 `config.json` 写到别处。
 
 ### version
 
-Prints the installed version:
+打印已安装的版本：
 
 ```bash
 agent-context version
 ```
 
-## Windows GUI
+## Windows 图形界面
 
-The Windows desktop version uses PySide6 and shares the same `.agent/` files with the CLI.
+Windows 桌面版使用 PySide6，与 CLI 共用同一套 `.agent/` 文件。
 
-Install the GUI dependency:
+安装图形界面依赖：
 
 ```powershell
 pip install -e ".[gui]"
 ```
 
-Launch it from a project directory:
+在项目目录里启动：
 
 ```powershell
 agent-context-gui
 ```
 
-Or pass a project path directly:
+或者直接传入项目路径：
 
 ```powershell
 agent-context-gui "D:\Projects\MyProject"
 ```
 
-The GUI provides project selection, initialization, context Markdown editing, checkpoint creation, resume text copying, archive preview, and health checks. It also adds:
+图形界面提供项目选择、初始化、上下文 Markdown 编辑、创建 checkpoint、复制恢复文本、归档预览和健康检查。此外还有：
 
-- **复制填充提示词** - copies a Chinese bootstrap prompt that tells a fresh agent which files to read and which files it may write.
-- **导出项目 / 导入项目** - `.agentctx.json` transfer files. Import backs up every file it replaces under `.agent/archive/import-backup-<stamp>/`, keeps an existing hand-written `AGENTS.md`, and refuses paths that try to escape the target directory.
-- **上下文档案 tokens** - the context a fresh agent actually loads. `.agent/archive/` is reported separately because `resume` never reads it.
-- **外部打开** - opens the current context file with `default_editor` or the OS default program.
-- **Changes / 变更** - diffs any two recorded versions of a file: added lines on green, removed lines on red, each side stamped with its time. While you type, the editor also tints the lines you have added but not saved yet.
+- **复制填充提示词** —— 复制一段中文提示词，让新的 Agent 知道该读哪些文件、只允许改哪些文件。
+- **导出项目 / 导入项目** —— `.agentctx.json` 迁移文件。导入时会把被替换的每个文件备份到 `.agent/archive/import-backup-<时间戳>/`，保留已有的手写 `AGENTS.md`，并拒绝任何试图逃出目标目录的路径。
+- **上下文档案 tokens** —— 新 Agent 真正会加载的上下文规模。`.agent/archive/` 会单独列出，因为 `resume` 从不读取它。
+- **外部打开** —— 用 `default_editor` 或系统默认程序打开当前上下文文件。
+- **Changes / 变更** —— 对比同一个文件任意两个已记录版本：新增行绿色、删除行红色，两侧各带自己的时间。你打字时，编辑器也会把你「新增但尚未保存」的行标绿。
 
-## Project Structure
+## 项目结构
 
-An initialized project contains:
+初始化之后，项目里会多出：
 
 ```text
 .agent/
@@ -202,11 +196,11 @@ An initialized project contains:
 ├── DECISIONS.md
 ├── CHANGELOG.md
 ├── archive/
-└── versions/        # change history snapshots (managed automatically)
+└── versions/        # 变更历史快照（自动管理）
 AGENTS.md
 ```
 
-Source layout:
+源码布局：
 
 ```text
 src/agent_context/
@@ -220,94 +214,95 @@ src/agent_context/
 ├── archive.py
 ├── doctor.py
 ├── templates.py
+├── transfer.py
+├── versions.py
+├── icons.py
+├── gui.py
 └── utils.py
 ```
 
-## Context Protocol
+## 上下文协议
 
-`STATE.md` is the current project state, not a historical log. Each checkpoint keeps it current rather than appending old summaries.
+`STATE.md` 表示项目的当前状态，不是历史日志。每次 checkpoint 都是把它更新到最新，而不是把旧总结往下追加。
 
-`TODO.md` stores short P0/P1/P2/Blocked task lists. It should not duplicate long descriptions already present in `STATE.md`.
+`TODO.md` 存放简短的 P0/P1/P2/Blocked 任务列表，不应重复 `STATE.md` 里已有的长篇说明。
 
-`DECISIONS.md` stores important technical decisions only.
+`DECISIONS.md` 只记录重要的技术决策。
 
-`CHANGELOG.md` stores actual changes over time.
+`CHANGELOG.md` 记录随时间发生的真实变更。
 
-`INDEX.md` points agents to relevant files. It should not copy source code.
+`INDEX.md` 指向相关文件，不要把源码复制进去。
 
-`.agent/archive/` stores historical checkpoint snapshots. `resume` does not read archives by default.
+`.agent/archive/` 存放历史 checkpoint 快照；`resume` 默认不读归档。
 
-`.agent/versions/` stores one content snapshot per change of every context file, including
-changes an agent made while the app was open. It is what the GUI `Changes` page diffs
-against, it is pruned automatically (see `version_history_limit` in `agent-context config`),
-and it must never be hand-edited. `export` leaves it out so transfer files stay small.
+`.agent/versions/` 为每个上下文文件保存内容快照（包括 Agent 在程序开着的时候做的修改）。图形界面的 `Changes` 页就是拿它做对比；它会被自动裁剪（见 `agent-context config` 里的 `version_history_limit`），并且**绝对不要手工编辑**。`export` 会跳过它，让迁移文件保持小体积。
 
-## Claude Usage
+## 在 Claude 中的用法
 
-### New Project
+### 新项目
 
 ```bash
 cd my-project
 agent-context init
 ```
 
-Tell Claude:
+告诉 Claude：
 
 ```text
 Read AGENTS.md and follow the project context protocol.
 ```
 
-### Working
+### 工作中
 
-Work normally. When the conversation becomes large:
+正常干活。当对话变长时：
 
 ```bash
 agent-context checkpoint
 ```
 
-### New Conversation
+### 新对话
 
 ```bash
 agent-context resume
 ```
 
-Paste the output into Claude.
+把输出粘贴给 Claude。
 
-## Codex Usage
+## 在 Codex 中的用法
 
-Initialize once:
+初始化一次：
 
 ```bash
 agent-context init
 ```
 
-At the start of a new Codex task, run:
+每开始一个新的 Codex 任务时运行：
 
 ```bash
 agent-context resume
 ```
 
-Ask Codex to read `AGENTS.md`, then inspect only files relevant to the current task.
+让 Codex 先读 `AGENTS.md`，然后只检查与当前任务相关的文件。
 
-## Cursor Usage
+## 在 Cursor 中的用法
 
-Initialize the project:
+初始化项目：
 
 ```bash
 agent-context init
 ```
 
-When switching Cursor chats:
+切换 Cursor 聊天窗口时：
 
 ```bash
 agent-context resume
 ```
 
-Paste the resume output and tell Cursor not to scan the full project unless needed.
+粘贴恢复输出，并告诉 Cursor 不要扫描整个项目，除非确实需要。
 
 ## Windows
 
-Use PowerShell or Command Prompt:
+用 PowerShell 或命令提示符：
 
 ```powershell
 pip install -e .
@@ -315,115 +310,111 @@ agent-context init
 agent-context status
 ```
 
-Paths with Chinese, spaces, and Unicode characters are supported through `pathlib` and UTF-8 Markdown reads/writes.
+包含中文、空格和 Unicode 字符的路径都受支持，因为内部使用 `pathlib` 和 UTF-8 读写 Markdown。
 
-## Troubleshooting
+## 常见问题
 
-Run:
+先运行：
 
 ```bash
 agent-context doctor
 ```
 
-Common fixes:
+常见处理方式：
 
-- Missing `.agent/`: run `agent-context init`.
-- Invalid Markdown encoding: save files as UTF-8.
-- Git not detected: install Git, or continue without Git integration.
-- Existing `AGENTS.md`: the tool skips it by design and will not overwrite your project instructions.
-- `STATE.md needs attention` / `missing required sections`: the file was rewritten without the protocol headings. Run `agent-context repair` to re-add them (content is preserved).
-- Pending-task counts show `P0: 0`: `TODO.md` needs `## P0` / `## P1` / `## P2` / `## Blocked` headings. `repair` restores the `# TODO` heading but will not invent priorities.
-- Never rewrite `.agent/STATE.md` wholesale, and never delete or rename its `##` sections. Update sections in place; a full rewrite is what breaks `status` / `resume` / `checkpoint`.
-- Duplicated `## P0` / `## P1` blocks in `TODO.md`: only the first block is read, so the rest used to disappear silently from `status` and `resume`. `repair` now merges duplicates and keeps every line.
-- `checkpoint` with a `TODO.md` that lost its heading: the heading is restored automatically. Before 0.5 the run aborted *after* `STATE.md` had already been rewritten, leaving no archive behind.
-- Importing a transfer file: replaced files are backed up under `.agent/archive/import-backup-<stamp>/` and an existing hand-written `AGENTS.md` is kept rather than overwritten.
-- `.agent/versions/` growing: it keeps the newest 30 versions per file plus the first version of every day. Lower `version_history_limit` with `agent-context config` if that is too much history.
+- 缺少 `.agent/`：运行 `agent-context init`。
+- Markdown 编码不合法：把文件保存为 UTF-8。
+- 没检测到 Git：安装 Git，或者不用 Git 集成继续使用。
+- `AGENTS.md` 已存在：工具会按设计跳过，不会覆盖你项目里的说明。
+- 报 `STATE.md needs attention` / `missing required sections`：文件被重写时丢了协议章节。运行 `agent-context repair` 补回来（内容会保留）。
+- 待办数量显示 `P0: 0`：`TODO.md` 需要 `## P0` / `## P1` / `## P2` / `## Blocked` 标题。`repair` 会补回 `# TODO` 标题，但不会替你编造优先级。
+- 永远不要整体重写 `.agent/STATE.md`，也不要删除或重命名它的 `##` 章节。要原地更新章节；整篇重写正是让 `status` / `resume` / `checkpoint` 坏掉的原因。
+- `TODO.md` 里出现重复的 `## P0` / `## P1` 块：只有第一块会被读取，剩下的过去会从 `status` 和 `resume` 里静默消失。现在 `repair` 会合并重复内容并保留每一行。
+- `TODO.md` 丢了标题时运行 `checkpoint`：标题会自动补回。0.5 之前会在 `STATE.md` 已经被重写之后才中止，结果归档一个都没留下。
+- 导入迁移文件：被替换的文件会备份到 `.agent/archive/import-backup-<时间戳>/`，已有的手写 `AGENTS.md` 会被保留而不是覆盖。
+- `.agent/versions/` 越来越大：它默认保留每个文件最近 30 个版本，外加每天的第一个版本。如果历史太多，用 `agent-context config` 调低 `version_history_limit`。
 
-## Development
+## 开发
 
-Run the standard library tests without external test dependencies:
+不装任何外部测试依赖，直接用标准库跑测试：
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-Run with pytest when installed:
+装了 pytest 之后：
 
 ```bash
 pip install -e ".[test,gui]"
 pytest
 ```
 
-The GUI tests import PySide6. When the `gui` extra is missing they skip
-themselves; installing only `[test]` used to abort pytest collection entirely.
+图形界面测试会导入 PySide6；缺少 `gui` 依赖时它们会自行跳过。只装 `[test]` 时，pytest 过去会直接中断整个收集过程。
 
-The CLI implementation uses Typer and Rich when installed. A small argparse/plain-text fallback exists so core logic can still be exercised in minimal local Python environments.
+CLI 在检测到 Typer 和 Rich 时使用它们；同时保留了一个小型 argparse/纯文本降级路径，让核心逻辑在没有这些依赖的环境中依然能跑。
 
-## Testing
+## 测试覆盖
 
-The test suite covers:
+测试套件覆盖：
 
-- Initialization and `AGENTS.md` preservation
-- UTF-8 state parsing
-- Checkpoint archive creation
-- Minimal resume output
-- Project isolation between separate `.agent/` directories
-- Git detection and `git status --short`
+- 初始化以及 `AGENTS.md` 的保留
+- UTF-8 状态解析
+- checkpoint 归档创建
+- 最小化 resume 输出
+- 不同 `.agent/` 目录之间的项目隔离
+- Git 检测与 `git status --short`
+- 变更历史：去重、保留策略、差异分类
+- 导入安全：路径逃逸、备份、手写 `AGENTS.md` 保留
 
-## Packaging
+## 打包
 
-Install PyInstaller:
+安装 PyInstaller：
 
 ```bash
 pip install -e ".[gui,package]"
 ```
 
-Windows PowerShell:
+Windows PowerShell：
 
 ```powershell
 .\scripts\build-windows.ps1
 ```
 
-If Windows blocks local scripts (`... cannot be loaded because running scripts is
-disabled on this system`), run the same script through a bypass policy:
+如果 Windows 禁止运行本地脚本（提示 running scripts is disabled on this system），用绕过策略执行同一个脚本：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 ```
 
-Output:
+产物：
 
 ```text
 dist\agent-context\agent-context.exe                            (CLI)
 dist\Agent Context Manager v0.8\Agent Context Manager v0.8.exe  (Windows GUI)
 ```
 
-The Windows builds are **onedir**, not onefile: everything the app needs lives next
-to the executable, so the whole folder has to be shipped. This is deliberate. A
-onefile build unpacks itself into `%TEMP%` on every start, and on a machine whose
-`%TEMP%` is damaged (for example leftover `_MEI` folders that cannot even be opened)
-the bootloader fails with `Could not create temporary directory!` before any of the
-application code runs. The onedir build loads its DLLs from its own folder and never
-needs a writable `%TEMP%`.
+Windows 产物是 **onedir** 而不是 onefile：程序需要的东西都放在可执行文件旁边，所以分发时必须带上整个文件夹。这是刻意的选择 —— onefile 版本每次启动都会把自己解压到 `%TEMP%`，而在 `%TEMP%` 已经损坏的机器上（例如存在连打开都失败的 `_MEI` 残留目录），引导器会在任何应用代码运行之前就报 `Could not create temporary directory!`。onedir 版本直接从自己的目录加载 DLL，完全不需要可写的 `%TEMP%`。
 
-The Windows build is local and does not require Node.js, a database, or a server.
+Windows 打包是纯本地的，不需要 Node.js、数据库或服务器。
 
-## Updating
+## 更新
 
-Pull or copy the updated source, then reinstall:
+拉取或复制更新后的源码，然后重新安装：
 
 ```bash
 pip install -e .
 ```
 
-For the packaged Windows executable, rebuild with `scripts\build-windows.ps1`.
+使用打包好的 Windows 程序时，用 `scripts\build-windows.ps1` 重新构建。
 
-## Changelog and contributing
+## 变更记录与贡献
 
-What changed between releases is in [CHANGELOG.md](CHANGELOG.md). If you want to send a
-patch, [CONTRIBUTING.md](CONTRIBUTING.md) describes the setup and the two rules that
-matter most: keep the `.agent/` boundary, and add a regression test for every fix.
+各版本之间的改动见 [CHANGELOG.md](CHANGELOG.md)。想提交补丁的话，[CONTRIBUTING.md](CONTRIBUTING.md) 说明了环境搭建方式，以及最重要的两条规则：守住 `.agent/` 边界，并给每个修复补一个回归测试。
 
-## License
+## 作者
 
-MIT - see [LICENSE](LICENSE).
+本项目由 **bsaizne** 创建与维护。
+
+## 许可证
+
+MIT —— 见 [LICENSE](LICENSE)。
