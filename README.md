@@ -1,5 +1,6 @@
 # Agent Context Manager
 
+[![tests](https://github.com/bsaizne/agent-context-manager/actions/workflows/tests.yml/badge.svg)](https://github.com/bsaizne/agent-context-manager/actions/workflows/tests.yml)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)
