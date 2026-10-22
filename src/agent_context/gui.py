@@ -554,6 +554,10 @@ class MainWindow(QMainWindow):
         QScrollArea#overviewScroll {{ background:transparent; border:0; }}
         QFrame#card QScrollArea {{ background:transparent; border:0; }}
         QFrame#card {{ background:{c['card']}; border:1px solid {c['line']}; border-radius:12px; }} QLineEdit, QPlainTextEdit, QListWidget {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:8px; }}
+        QComboBox {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:8px 32px 8px 12px; min-height:18px; }}
+        QComboBox:hover {{ border-color:{c['accent']}; }}
+        QComboBox::drop-down {{ border:0; width:28px; }}
+        QComboBox::down-arrow {{ image:none; border-left:4px solid transparent; border-right:4px solid transparent; border-top:5px solid {c['muted']}; margin-right:10px; }}
         QPushButton {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:8px 14px; min-height:18px; }} QPushButton:hover {{ border-color:{c['accent']}; }} QPushButton#primary {{ background:{c['accent']}; color:white; border:0; }} QPushButton#primary:disabled {{ background:{c['accent']}; color:white; }}
         QRadioButton {{ spacing:8px; padding:4px; }} QListWidget::item {{ padding:10px; border-bottom:1px solid {c['line']}; }}
         QScrollBar:vertical {{ background:transparent; width:9px; margin:2px; border-radius:4px; }}
@@ -735,6 +739,16 @@ class MainWindow(QMainWindow):
     def _refresh_context(self) -> None:
         try:
             external_changed = self._detect_external_changes() if hasattr(self, "_file_mtimes") else []
+            # Re-read status so a previously failed load (status=None with a stale
+            # error message) recovers once the .agent folder is usable, e.g. right
+            # after the user initializes the project.
+            if (self.project_path / ".agent").is_dir():
+                try:
+                    self.current_status = get_status(self.project_path)
+                    self._project_load_message = ""
+                except ContextError as exc:
+                    self.current_status = None
+                    self._project_load_message = f"已检测到 .agent，但 STATE.md 需要修复：{exc.reason or exc.message}"
             try:
                 self._current_token_stats = context_token_stats(self.project_path)
                 pass
@@ -1040,7 +1054,16 @@ class MainWindow(QMainWindow):
             self._apply_editor_marks(); self._refresh_changes(); self._update_overview(force=True)
 
     def _init_project(self) -> None:
-        try: result = init_project(self.project_path); self._refresh_context(); QMessageBox.information(self, "初始化完成", f"已创建 {len(result.created)} 项文件或目录。")
+        try:
+            result = init_project(self.project_path)
+            # init succeeded, so any "no .agent folder" / "STATE.md needs repair"
+            # message from an earlier failed load is now stale; drop it and let
+            # _refresh_context() rebuild both the editors and the overview.
+            self._project_load_message = ""
+            self.current_status = get_status(self.project_path)
+            self.file_paths = context_file_paths(self.project_path)
+            self._refresh_context()
+            QMessageBox.information(self, "初始化完成", f"已创建 {len(result.created)} 项文件或目录。")
         except (ContextError, OSError) as exc: self._show_error(exc)
 
     def _checkpoint(self) -> None:
@@ -1150,8 +1173,29 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "操作失败", details)
 
 
+def _register_system_fonts() -> None:
+    # On Windows builds older than 10 1903, Qt's DirectWrite/GDI font backend
+    # can fail to enumerate system fonts (every glyph renders as a tofu box).
+    # Manually registering the font files works around that; addApplicationFont
+    # returns -1 per file on failure, so this degrades to a no-op elsewhere.
+    from PySide6.QtGui import QFontDatabase
+    font_dirs = [Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"]
+    for font_dir in font_dirs:
+        if not font_dir.is_dir():
+            continue
+        for pattern in ("*.ttf", "*.ttc", "*.otf"):
+            for font_path in font_dir.glob(pattern):
+                QFontDatabase.addApplicationFont(str(font_path))
+
+
 def main() -> None:
     set_windows_app_id(); app = QApplication(sys.argv); app.setApplicationName("Agent Context Manager"); app.setOrganizationName("Agent Context Manager"); app.setWindowIcon(app_icon())
+    _register_system_fonts()
+    # The native "windowsvista" style renders half-broken on pre-1903 systems
+    # (classic-looking comboboxes, flat pushbuttons); Fusion is drawn by Qt
+    # itself and looks the same everywhere.
+    from PySide6.QtWidgets import QStyleFactory
+    app.setStyle(QStyleFactory.create("Fusion"))
     window = MainWindow(sys.argv[1] if len(sys.argv) > 1 else None); window.show(); raise SystemExit(app.exec())
 
 
