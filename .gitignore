@@ -15,3 +15,8 @@ Thumbs.db
 *.spec.bak
 .tmp/
 *.log
+
+# Machine-generated context history: the tool keeps the live files in .agent/,
+# but the archives and version snapshots grow on every checkpoint.
+.agent/archive/
+.agent/versions/
