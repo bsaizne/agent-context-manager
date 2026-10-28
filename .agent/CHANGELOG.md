@@ -2,6 +2,32 @@
 
 面向发布的历史见仓库根目录的 `CHANGELOG.md`（英文，按 Keep a Changelog + SemVer）。这里记录与「上下文档案」相关的要点与重大转折，便于接手者快速对齐。
 
+## 2026-10-28（0.9.0 提交/推送 + 档案刷新）
+
+### Added
+
+- v0.9.0：可配置 handoff prompt（`agent_prompt_template`，支持 `{project}` / `{resume}`；Settings 可编辑）；combobox 下拉主题跟随应用主题。
+
+### Fixed
+
+- 0.8.1 的侧栏导航 off-by-one 与 Changes 控制行重叠修复随 0.9.0 一并提交；回归测试 `tests/test_gui_pages.py`。
+
+### Released
+
+- 提交 `4ba0200` `feat: add configurable handoff prompt and ship 0.9.0`（17 文件，+544/−60），推送到 `origin/main`；远端 sha 与本地 HEAD 一致。
+- 本地 onedir 包：`D:\vibe code\Agent Context Manager\Agent Context Manager v0.9.0\`（2026-10-27）。
+
+### Context
+
+- `.agent/STATE.md` / `TODO.md` / `INDEX.md` 从 0.8.1 刷新到 0.9.0；`DECISIONS.md` 修正 D4（版本一致性按 major.minor）并新增 D9（C 盘目录是 0.9.0 镜像，不复制 `.git`）。
+- C 盘镜像已同步 14 个文件到 0.9.0（逐个 sha256 校验一致）。
+
+### Notes
+
+- 本次提交前，0.9.0 源码一直在工作区未提交；误 checkout/clean 会丢失。现已入库并推送。
+- 这次档案刷新（5 个 `.agent` 文件）尚未提交，见 TODO P1。
+- D 的 `AGENTS.md` 在提交前一并修正（原文仍写 0.8.0 与「C 目录仅作 0.8.0 归档、不再同步」）。
+
 ## 2026-10-25
 
 ### Added

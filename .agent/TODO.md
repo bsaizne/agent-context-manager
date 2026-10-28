@@ -2,20 +2,24 @@
 
 ## P0 — 当前
 
-- [ ] 无。v0.8.0 已发布在 GitHub，CI 全绿；没有必须立刻做的事。
+- [ ] 无。v0.9.0 已提交并推送到 `origin/main`（`4ba0200`）；源码工作区无改动。
 
 ## P1 — 下一步
 
-- [ ] L2 逐行溯源：在 `versions.py` 增加 blame（遍历版本链，标出每行首次出现的时间），GUI 的 Changes 页展示。
-- [ ] 下次小版本（v0.9）：四处版本号 +1（pyproject / `__version__` / 两个 spec）、onedir 打包、产物放 `D:\vibe code`、用 `gh_release.py` 发 GitHub Release。
-- [ ] 视需要补中文版 CHANGELOG / CONTRIBUTING（用户当前表示不需要）。
+- [ ] 提交本次 `.agent` 档案刷新（STATE/TODO/INDEX/DECISIONS/CHANGELOG 共 5 个文件）。
+- [ ] F1：L2 逐行溯源（blame）。在 `versions.py` 增加 blame，并在 Changes 页展示。
+- [ ] 把 `agent_prompt_template` 补进 `docs/ARCHITECTURE.md`（README 已有说明）。
+- [ ] 确认 GitHub Release v0.9.0 是否已发布（本地包已在 `D:\vibe code`）。
+- [ ] 下次发版 v0.10：版本号 +1（pyproject / `__version__` / GUI spec）、onedir 打包、产物放 `D:\vibe code`。
+- [ ] 每次主仓库改动完成后，按 D9 同步 C 盘镜像并更新其 `.agent` 档案。
 
 ## P2 — 以后
 
 - [ ] GUI 支持非 Windows 平台（当前 GUI 仅 Windows；CLI 已支持 macOS / Linux）。
 - [ ] 大差异时给 Changes 页加上下文折叠（只显示改动附近 N 行）。
 - [ ] 在 macOS / Linux 上验证 GUI 打包链路。
+- [ ] 视需要补中文版 CHANGELOG / CONTRIBUTING（用户当前表示不需要）。
 
 ## Blocked
 
-- [ ] 修复本机 `%TEMP%`（需要管理员权限执行 takeown + icacls，并清理 13 个不可访问的 `_MEI*`）。不阻塞 onedir 产物，但会让所有 onefile 程序在这台机器上启动失败。
+- [ ] 修复本机 `%TEMP%`（需要管理员权限执行 takeown + icacls，并清理 13 个不可访问的 `_MEI*`）。

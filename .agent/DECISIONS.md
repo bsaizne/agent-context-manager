@@ -21,10 +21,10 @@
 - **Alternatives**：全部覆盖（原行为）；只提示不备份。
 - **Rejected**：静默覆盖（真实事故）；无备份的覆盖。
 
-## D4 版本号四处一致，由测试强制
+## D4 版本号一致，由测试强制
 
-- **Decision**：`pyproject.toml`、`agent_context.__version__`、两个 spec 的 `EXE name`、发布包名必须一致；`tests/test_version_consistency.py` 校验前两者与 spec 的 minor 版本。
-- **Reason**：曾出现 `0.1.0` / `0.5` 混用，发布物名字与实际代码不一致。
+- **Decision**：`pyproject.toml`、`agent_context.__version__`、GUI spec 的 `EXE name`（只带 minor，如 `v0.9`）与发布包名保持一致；CLI spec 的名称不带版本号。`tests/test_version_consistency.py` 按 major.minor 前缀比对。
+- **Reason**：曾出现 `0.1.0` / `0.5` 混用，发布物名字与实际代码不一致；补丁版（0.8.1）也需要与 0.8 的产物名兼容。
 - **Alternatives**：只在一处维护版本号（需要构建时注入）。
 - **Rejected**：放宽测试让版本号漂移。
 
@@ -55,3 +55,10 @@
 - **Reason**：这个工具的价值是「可以放心在别人的项目里跑」，越界写入会直接毁掉信任。
 - **Alternatives**：允许写项目根的 `README`/`AGENTS.md` 之外的规则文件。
 - **Rejected**：任何形式的业务代码改动。
+
+## D9 C 盘目录作为 D 盘主仓库的 v0.9.0 镜像，不复制 `.git`
+
+- **Decision**：2026-10-28 按用户指示，把 C 盘 `outputs/agent-context-manager` 从 0.8.0 归档同步到 v0.9.0；只复制代码/测试/文档，不复制 `.git`、`.agent`、构建产物。主仓库仍是 D 盘 `D:\deepseek harnees\acm-dev\agent-context-manager`，代码改动回主仓库做再同步。
+- **Reason**：用户要求该工作区可用 0.9.0；D 盘仓库已含完整历史和 origin，把 `.git` 复制到 C 会产生两个仓库并很快分叉。保留本目录自己的 `.agent` 档案，避免用 D 的旧档案覆盖当前交接状态。
+- **Alternatives**：维持 2026-10-27 的「C 目录仅作 0.8.0 只读归档」规则；把主仓库整体迁回 C 盘。
+- **Rejected**：维持 0.8.0 归档（已被用户 2026-10-28 的决定取代）；复制 `.git` 到 C（重复仓库、易分叉）；复制 D 的 `.agent`（其 STATE 停留在 0.8.1，比本档案旧）。

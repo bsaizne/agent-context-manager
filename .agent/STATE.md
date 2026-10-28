@@ -2,62 +2,77 @@
 
 ## Project
 
-Agent Context Manager（Python 3.11+，CLI + PySide6 6.12 桌面 GUI）。本地优先、无服务器/无数据库/无网络调用的项目上下文交接工具：在每个项目自己的 `.agent/` 下用 Markdown 保存最小交接记忆。仓库 https://github.com/bsaizne/agent-context-manager ，作者 bsaizne，MIT。
+Agent Context Manager（Python 3.11+，CLI + PySide6 桌面 GUI）。本地优先、无服务器/无数据库/无网络调用的项目上下文交接工具：在每个项目自己的 `.agent/` 下用 Markdown 保存最小交接记忆。仓库 https://github.com/bsaizne/agent-context-manager ，作者 bsaizne，MIT。
+
+本目录是主仓库（D 盘，含完整 `.git` 与 origin）；C 盘 `outputs/agent-context-manager` 是无 `.git` 的镜像，2026-10-28 已同步到 0.9.0。
 
 ## Current Phase
 
-v0.8.1 补丁版已发布（本地 `D:\vibe code`，GitHub Release 未发）。处于「公开维护 + 按需迭代」阶段。
+v0.9.0 已完成、提交并推送：`4ba0200` 在 `origin/main`。本次档案刷新后有 5 个 `.agent` 文件未提交（源码无改动）。本地发布包在 `D:\vibe code\Agent Context Manager`（2026-10-27）；GitHub Release v0.9.0 是否已发布待确认。
 
 ## Current Task
 
-F1：L2 逐行溯源（P1）。
+F1：L2 逐行溯源（P1）——在 `versions.py` 增加 blame（遍历版本链，标出每行首次出现的时间），GUI 在 Changes 页展示。0.9.0 的 CHANGELOG 未包含此项。
 
 ## Completed
 
-- 上下文协议（STATE/TODO/INDEX/DECISIONS/CHANGELOG + archive）与 CLI 全部命令：init / status / checkpoint / resume / doctor / repair / archive / config / version。
+- 上下文协议（STATE/TODO/INDEX/DECISIONS/CHANGELOG + archive）与 CLI 全部 9 个命令：init / status / checkpoint / resume / doctor / repair / archive / config / version。
 - 结构修复不丢内容：`repair` 合并 STATE 与 TODO 的重复章节，`checkpoint` 可自修复缺失章节与缺失的 `# TODO` 标题。
-- 导入安全：拒绝路径穿越与绝对路径、覆盖前备份到 `.agent/archive/import-backup-<时间戳>/`、保留手写 `AGENTS.md`、返回 `ImportReport`。
-- 变更历史（L1）：`.agent/versions/` 内容快照 + GUI `Changes` 页（新增绿底/删除红底）+ 编辑器未保存新增行绿底 + 概览「最近变更」卡片。
-- 修掉 icons.py 两个会让进程直接退出的缺陷（不存在的 drawCircle、drawPolygon 传元组）。
-- 版本号四处统一 0.8.0；GitHub Actions 6 个 job（Windows 3.11/3.12/3.13 含 GUI + Linux CLI 三个版本）全绿。
-- 开源配套：中文 README + README.en.md、CHANGELOG、CONTRIBUTING、.gitattributes、CI workflow、About 描述与 topics、Release v0.8.0 与附件。
-- 已合并远程 PR #1 的 GUI 修复（13f5f7d）：`init` 成功后清除陈旧的加载错误提示、`_refresh_context` 重新读取 status、补齐 QComboBox 下拉样式；D 盘开发副本已同步该修复。
-- v0.8.1（2026-10-25）：修掉侧边栏工具页 off-by-one（Checkpoint/Resume/Doctor/Settings 各错开一页，根因是 `_navigate()` 的索引算术没算上 Changes 页占的 stack 槽位，已改 key→widget 显式映射）；修掉 Changes 控制行挤压重叠（1200px 宽就放不下，箭头/复选框被压进下拉框边框，改为两行布局 + 自绘 arrow 图标）。两个修复都有回归测试（`tests/test_gui_pages.py`）；版本一致性测试改为按 major.minor 前缀比对，适配补丁版命名。
+- 导入安全：拒绝路径穿越与绝对路径、覆盖前备份、保留手写 `AGENTS.md`、返回 `ImportReport`。
+- 变更历史（L1）：`.agent/versions/` 内容快照 + GUI `Changes` 页 + 编辑器未保存新增行绿底 + 概览「最近变更」。
+- 0.8.0：版本统一、icons 致命绘制缺陷修复、开源配套与 Release。
+- 0.8.1（2026-10-25）：侧栏工具页 off-by-one 修复（`_page_for_key` 显式映射）；Changes 控制行改两行布局；回归测试 `tests/test_gui_pages.py`。
+- 0.9.0（2026-10-27）：handoff prompt 可配置（`agent_prompt_template`，支持 `{project}` / `{resume}`，缺 `{resume}` 时自动追加）；combobox 下拉主题跟随应用主题；回归测试覆盖 resume/config/gui_pages。
+- 2026-10-28：0.9.0 源码提交为 `4ba0200` 并推送到 `origin/main`，推送后远端 sha 与本地 HEAD 一致。
+- 2026-10-28：C 盘镜像从本仓库同步 14 个文件到 0.9.0（逐个 sha256 校验一致），见 DECISIONS D9。
+- 2026-10-28 实测测试基线：15 个测试文件、68 个用例 + 45 个 subTest 全绿（3.23s，离屏 Qt）。
 
 ## Current Problem
 
-本机 `%TEMP%`（C:\Users\Bsaizne\AppData\Local\Temp）损坏：13 个连所有者都无法访问的 `_MEI*` 残留，且 Python `mkdtemp` 在其中会挂死。因此 onefile 打包产物在本机无法启动，必须 onedir；同时所有跑测试/构建的命令都要先把 TMP/TEMP 指到可写目录。修 TEMP 需要管理员权限（takeown + icacls），当前未处理。
+1. 本机 `%TEMP%` 损坏：13 个不可访问的 `_MEI*` 残留，Python `mkdtemp` 会挂死；修它需要管理员权限。
+2. GitHub Release v0.9.0 的状态未确认（本地包已存在）。
+3. C 盘镜像是无 `.git` 的副本，代码改动若只在那里做不会进入版本历史（D9 的对策是改动回主仓库再做同步）。
+4. 本次刷新的 5 个 `.agent` 文件尚未提交（`4ba0200` 之后的工作区改动只有这些档案）。
 
 ## Current Implementation
 
-- `src/agent_context/`：cli.py、gui.py（约 1100 行，PySide6）、state.py、checkpoint.py、versions.py（变更历史）、transfer.py（导出/导入）、doctor.py、project.py、templates.py、utils.py、git.py、archive.py、resume.py、status.py、config.py、icons.py。
-- 存储：`<project>/.agent/` 下 5 个 Markdown + `archive/`（checkpoint 快照）+ `versions/`（内容快照，自动裁剪 30 份 + 每天首份）。
-- 打包：`agent-context.spec` / `agent-context-gui.spec` 均为 onedir（exclude_binaries + COLLECT）；`scripts/build-windows.ps1` 从 spec 解析产物名并同时接受 onedir / onefile 路径。
+- `src/agent_context/` 18 个模块：gui 1288 行、versions 347、cli 326、state 324、templates 229、transfer 217、checkpoint 208、utils 182、doctor 173、icons 146、project 118、resume 96、git 89、config 47、status 46、archive 38。
+- 存储：`<project>/.agent/` 5 个 Markdown + `archive/`（checkpoint 快照）+ `versions/`（内容快照，默认每文件 30 份 + 每天首份）。
+- GUI：Overview + 5 个可编辑文档（STATE/TODO/INDEX/DECISIONS/CHANGELOG）+ Changes + Checkpoint + Resume + Doctor + Settings；侧栏仍只有 4 个文档入口，INDEX 无入口。
+- 配置默认值（`templates.DEFAULT_CONFIG`）：`archive_enabled=True`、`max_state_lines=120`、`max_todo_lines=100`、`default_editor=None`、`version_history_limit=30`、`agent_prompt_template=<默认模板>`。
+- 打包：两个 spec 均 onedir（`exclude_binaries=True` + `COLLECT`）；`scripts/build-windows.ps1` 从 spec 解析产物名，同时接受 onedir / onefile 路径。
+- 测试：15 文件 / 68 用例 / 45 subTest；`test_gui_pages.py` 覆盖侧栏导航与 Changes 控件布局；`test_version_consistency.py` 按 major.minor 比对。
 
 ## Current Decision
 
-D1 打包用 onedir（onefile 依赖可写 %TEMP%）｜D2 变更历史存整份快照而非 patch｜D3 导入安全优先于便利｜D4 版本号四处一致由测试守住｜D5 作者署名 bsaizne。详见 `.agent/DECISIONS.md`。
+D1 onedir｜D2 整份快照而非 patch｜D3 导入安全优先｜D4 版本号一致由测试守｜D5 署名 bsaizne｜D6 中文 README 为主｜D7 `versions/` 不导出不计 tokens｜D8 只写 `<project>/.agent/`｜D9 C 盘目录是本仓库的 v0.9.0 镜像（不复制 `.git`，改动回主仓库做）。详见 `.agent/DECISIONS.md`。
 
 ## Next Actions
 
-1. L2 逐行溯源：在 `versions.py` 增加 blame（遍历版本链，标出每行首次出现的时间），GUI 在 Changes 页展示。
-2. 视需要补中文 CHANGELOG / CONTRIBUTING（用户表示暂不需要）。
-3. 下次发版：版本号 +1（v0.9），打包 onedir，放 `D:\vibe code`，用 `D:\vibe code\gh_release.py` 发 Release（需要临时 token，用完删除 `.ghtoken` 并提醒撤销）。
+1. 继续 F1：在 `versions.py` 增加 blame，并在 Changes 页展示。
+2. 下次发版 v0.10：版本号 +1（pyproject / `__version__` / GUI spec）、onedir 打包、产物放 `D:\vibe code`。
+3. 视需要把 `agent_prompt_template` 补进 `docs/ARCHITECTURE.md`（README 已有说明）。
+4. 确认 GitHub Release v0.9.0 是否已发布。
+5. 之后每次改动主仓库后，按 D9 把 C 盘镜像同步到同一版本。
 
 ## Important Constraints
 
-- 只写 `<project>/.agent/`，绝不改业务代码。
-- Python 进程无法写 C 盘主目录（用 pwsh/文件工具，或在 D 盘副本改完同步）。
-- 打包必须 onedir；构建必须 `-ExecutionPolicy Bypass`；测试前把 TMP/TEMP 指到可写目录。
-- 版本号四处一致、作者署名 bsaizne、README 中文为主 + README.en.md。
-- 发布目录 `D:\vibe code` 命名按小版本 +1。
+- 本仓库是主仓库，提交/推送在这里做；C 盘镜像没有 `.git`，不要在那里提交。
+- 只允许写 `<project>/.agent/`（外加 `init` 时创建的那一个 `AGENTS.md`）；这是产品承诺，改代码也不能破坏。
+- 本机 `%TEMP%` 损坏；测试/构建前把 `TMP`/`TEMP` 指向 `D:\deepseek harnees\acm-dev\.tmp`。
+- 打包必须 onedir；构建必须 `-ExecutionPolicy Bypass`。
+- 版本号一致（pyproject / `__version__` / GUI spec 的 minor / 发布包名）；作者署名 bsaizne；README 中文为主 + `README.en.md`。
+- 发布目录 `D:\vibe code\Agent Context Manager` 按小版本 +1，当前已有 v0.9.0。
+- 推送时机由用户决定。
 
 ## Known Issues
 
-- 本机 %TEMP% 损坏（见 Current Problem），影响所有 onefile 程序与部分临时目录依赖。
-- 同一秒内两次快照的顺序此前依赖 digest，已改为按 index 记录顺序；`versions.py` 里保留注释说明。
-- GUI 的 PySide6 字体目录告警（`QFontDatabase: Cannot find font directory`）是 PySide6 wheel 不带字体导致，无功能影响。
+- 本机 `%TEMP%` 损坏，onefile 程序无法启动；所有临时目录依赖需重定向。
+- `INDEX.md` 有编辑页但侧栏无入口（0.9.0 仍未加入）；是否刻意待确认。
+- `docs/ARCHITECTURE.md` 尚未描述 0.9.0 的 `agent_prompt_template`（README 已写）。
+- PySide6 字体目录告警无功能影响。
+- C 盘镜像的 `.venv` 已失效；在镜像里跑测试需借用本仓库的 venv + 其 `.tmp`。
 
 ## Last Updated
 
-2026-10-25 14:57
+2026-10-28 22:43
