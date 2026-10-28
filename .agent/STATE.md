@@ -6,7 +6,7 @@ Agent Context Manager（Python 3.11+，CLI + PySide6 6.12 桌面 GUI）。本地
 
 ## Current Phase
 
-v0.8.0 已开源发布（GitHub public，CI 全绿，Release v0.8.0 已带 onedir 包）。处于「公开维护 + 按需迭代」阶段。
+v0.8.1 补丁版已发布（本地 `D:\vibe code`，GitHub Release 未发）。处于「公开维护 + 按需迭代」阶段。
 
 ## Current Task
 
@@ -22,6 +22,7 @@ F1：L2 逐行溯源（P1）。
 - 版本号四处统一 0.8.0；GitHub Actions 6 个 job（Windows 3.11/3.12/3.13 含 GUI + Linux CLI 三个版本）全绿。
 - 开源配套：中文 README + README.en.md、CHANGELOG、CONTRIBUTING、.gitattributes、CI workflow、About 描述与 topics、Release v0.8.0 与附件。
 - 已合并远程 PR #1 的 GUI 修复（13f5f7d）：`init` 成功后清除陈旧的加载错误提示、`_refresh_context` 重新读取 status、补齐 QComboBox 下拉样式；D 盘开发副本已同步该修复。
+- v0.8.1（2026-10-25）：修掉侧边栏工具页 off-by-one（Checkpoint/Resume/Doctor/Settings 各错开一页，根因是 `_navigate()` 的索引算术没算上 Changes 页占的 stack 槽位，已改 key→widget 显式映射）；修掉 Changes 控制行挤压重叠（1200px 宽就放不下，箭头/复选框被压进下拉框边框，改为两行布局 + 自绘 arrow 图标）。两个修复都有回归测试（`tests/test_gui_pages.py`）；版本一致性测试改为按 major.minor 前缀比对，适配补丁版命名。
 
 ## Current Problem
 
@@ -59,4 +60,4 @@ D1 打包用 onedir（onefile 依赖可写 %TEMP%）｜D2 变更历史存整份�
 
 ## Last Updated
 
-2026-10-25 14:03
+2026-10-25 14:57

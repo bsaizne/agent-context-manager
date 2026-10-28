@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .config import load_config
 from .state import load_snapshot
-from .utils import compact_lines, first_nonempty_line
+from .templates import DEFAULT_AGENT_PROMPT_TEMPLATE
+from .utils import ContextError, compact_lines, first_nonempty_line
 
 
 def build_resume(project_path: Path) -> str:
@@ -58,16 +60,37 @@ def build_resume(project_path: Path) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def render_agent_prompt(project_path: Path, template: str | None = None) -> str:
+    """Render the handoff prompt from the user-editable template.
+
+    {project} becomes the project folder name and {resume} the full resume
+    text. A template without {resume} would send the agent a handoff with no
+    project context at all, so the resume text is appended and the missing
+    placeholder is flagged. Substitution deliberately falls back to plain
+    str.replace when str.format trips over stray braces — users legitimately
+    put JSON snippets and shell examples in their prompts.
+    """
+    if template is None:
+        try:
+            template = load_config().get("agent_prompt_template")
+        except ContextError:
+            template = None
+        if not template:
+            template = DEFAULT_AGENT_PROMPT_TEMPLATE
+    resume_text = build_resume(project_path).strip()
+    try:
+        rendered = template.format(project=project_path.name, resume=resume_text).strip()
+    except (KeyError, IndexError, ValueError):
+        rendered = template.replace("{resume}", resume_text).replace("{project}", project_path.name).strip()
+    if "{resume}" not in template:
+        rendered += (
+            "\n\n---\n\n"
+            + resume_text
+            + "\n\n（提示：模板里没有 {resume} 占位符，交接上下文已自动附加在末尾。）"
+        )
+    return rendered + "\n"
+
+
 def build_agent_prompt(project_path: Path) -> str:
-    return f"""Continue this project.
-
-Read AGENTS.md first.
-
-Then use the following project state:
-
-{build_resume(project_path).strip()}
-
-Do not reconstruct the entire conversation.
-Do not scan the entire project.
-Only inspect files relevant to the current task.
-"""
+    """Handoff prompt = user template from config, rendered with the resume."""
+    return render_agent_prompt(project_path)

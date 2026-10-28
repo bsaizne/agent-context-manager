@@ -14,17 +14,31 @@ CONTEXT_FILES = [
     "CHANGELOG.md",
 ]
 
+# Handoff prompt template. {project} is replaced with the project folder name
+# and {resume} with the full build_resume() output; resume.render_agent_prompt
+# does the substitution. The stock default tells the new agent to stop and wait
+# for instructions instead of starting work on its own. Users edit it in the
+# GUI Settings page (or by hand in config.json).
+DEFAULT_AGENT_PROMPT_TEMPLATE = """以下是「{project}」项目的交接上下文。
+
+请先读 AGENTS.md，再看下面的项目状态。读完请停下来等我下达具体任务指令；在我明确给出指令之前，不要主动修改任何文件、不要开始任何任务。
+
+{resume}
+"""
+
 # Every key here must be read by real code, otherwise `agent-context config`
 # advertises settings that do nothing. archive_enabled drives checkpoint
 # archiving, max_state_lines/max_todo_lines drive the doctor size warnings,
-# default_editor is used by the GUI external-open action, and
-# version_history_limit caps how many change-history snapshots are kept.
+# default_editor is used by the GUI external-open action,
+# version_history_limit caps how many change-history snapshots are kept, and
+# agent_prompt_template is rendered by resume.build_agent_prompt.
 DEFAULT_CONFIG = {
     "archive_enabled": True,
     "max_state_lines": 120,
     "max_todo_lines": 100,
     "default_editor": None,
     "version_history_limit": 30,
+    "agent_prompt_template": DEFAULT_AGENT_PROMPT_TEMPLATE,
 }
 
 

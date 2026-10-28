@@ -31,20 +31,21 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
+    QListWidget, QListWidgetItem, QListView, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
     QComboBox, QRadioButton, QScrollArea, QSizePolicy, QStackedWidget, QStatusBar, QTextEdit,
     QToolButton, QVBoxLayout, QWidget,
 )
 
 from .archive import list_archives, read_archive
 from .checkpoint import run_checkpoint
-from .config import load_config
+from .config import load_config, save_config
 from .doctor import run_doctor
 from .icons import icon
 from .project import context_file_paths, find_initialized_project_path, init_project, resolve_project_path
 from .resume import build_agent_prompt
 from .state import repair_project
 from .status import ProjectStatus, get_status
+from .templates import DEFAULT_AGENT_PROMPT_TEMPLATE
 from .transfer import context_token_stats, export_project, import_project
 from .utils import ContextError, read_utf8, write_utf8
 from .versions import (
@@ -243,7 +244,7 @@ class MainWindow(QMainWindow):
 
         content = QWidget(); content_layout = QVBoxLayout(content); content_layout.setContentsMargins(0, 0, 0, 0); content_layout.setSpacing(0)
         top = QFrame(); top.setObjectName("topbar"); top_layout = QHBoxLayout(top); top_layout.setContentsMargins(28, 18, 28, 18)
-        self.recent_combo = QComboBox(); self.recent_combo.setMinimumWidth(220); self.recent_combo.setToolTip("最近打开的项目"); self.recent_combo.currentIndexChanged.connect(self._recent_project_selected); top_layout.addWidget(self.recent_combo)
+        self.recent_combo = self._polish_combo(QComboBox()); self.recent_combo.setMinimumWidth(220); self.recent_combo.setToolTip("最近打开的项目"); self.recent_combo.currentIndexChanged.connect(self._recent_project_selected); top_layout.addWidget(self.recent_combo)
         self.path_edit = QLineEdit(); self.path_edit.setPlaceholderText("项目目录"); self.path_edit.returnPressed.connect(self._open_project); top_layout.addWidget(self.path_edit, 1)
         browse = QPushButton("浏览"); browse.setIcon(icon("folder")); browse.clicked.connect(self._browse_project); top_layout.addWidget(browse)
         open_btn = QPushButton("打开"); open_btn.setIcon(icon("arrow")); open_btn.clicked.connect(self._open_project); top_layout.addWidget(open_btn); content_layout.addWidget(top)
@@ -254,6 +255,23 @@ class MainWindow(QMainWindow):
 
     def _nav_button(self, key: str, text: str) -> QToolButton:
         button = QToolButton(); button.setObjectName("navButton"); button.setText(text); button.setIcon(icon(key)); button.setIconSize(icon(key).availableSizes()[0] if icon(key).availableSizes() else button.sizeHint()); button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon); button.setCheckable(True); button.setAutoExclusive(True); button.clicked.connect(lambda: self._navigate_by_key(key)); return button
+
+    def _polish_combo(self, combo: QComboBox) -> QComboBox:
+        """Frame the dropdown popup so the QSS gives it the themed look.
+
+        The popup is a separate top-level window. Left alone it renders with
+        native platform colors (white, square, system-blue selection) even
+        though the closed combo is fully styled, and the default container
+        draws a system drop shadow that clashes with the flat theme. A plain
+        QListView plus a frameless, translucent popup window lets the
+        QComboBox QAbstractItemView stylesheet rules (rounded border, accent
+        selection) show through to the corners.
+        """
+        combo.setView(QListView())
+        popup = combo.view().window()
+        popup.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        popup.setAttribute(Qt.WA_TranslucentBackground, True)
+        return combo
 
     def _make_pages(self) -> None:
         self.overview = Page("Overview", "项目上下文的当前快照和下一步行动")
@@ -272,25 +290,39 @@ class MainWindow(QMainWindow):
         """Diff view: what was added (green) and removed (red) between two versions."""
         self.changes_page = Page("Changes", "查看每个文档新增了什么、删除了什么，以及发生的时间")
         controls = self._card()
-        row = QHBoxLayout(controls); row.setContentsMargins(16, 14, 16, 14); row.setSpacing(8)
-        row.addWidget(QLabel("文件"))
-        self.changes_file_combo = QComboBox(); self.changes_file_combo.addItems(EDITABLE_FILES)
+        rows = QVBoxLayout(controls); rows.setContentsMargins(16, 14, 16, 14); rows.setSpacing(8)
+        # Two rows instead of one. A single row could not fit even the 1000px
+        # minimum window width (the file combo alone has a ~170px minimumSizeHint
+        # and the two version combos need real width too); QBoxLayout then squeezed
+        # the arrow label and the checkbox on top of the combo borders, which read
+        # as "arrow boxed into the combo".
+        top = QHBoxLayout(); top.setSpacing(8)
+        top.addWidget(QLabel("文件"))
+        self.changes_file_combo = self._polish_combo(QComboBox()); self.changes_file_combo.addItems(EDITABLE_FILES)
         self.changes_file_combo.currentIndexChanged.connect(self._refresh_changes)
-        row.addWidget(self.changes_file_combo)
-        row.addWidget(QLabel("对比"))
-        self.changes_from_combo = QComboBox(); self.changes_from_combo.setMinimumWidth(200)
+        top.addWidget(self.changes_file_combo)
+        top.addStretch()
+        refresh = QPushButton("刷新"); refresh.setIcon(icon("refresh")); refresh.clicked.connect(self._refresh_changes)
+        top.addWidget(refresh)
+        rows.addLayout(top)
+        compare = QHBoxLayout(); compare.setSpacing(8)
+        compare.addWidget(QLabel("对比"))
+        self.changes_from_combo = self._polish_combo(QComboBox()); self.changes_from_combo.setMinimumWidth(140)
         self.changes_from_combo.currentIndexChanged.connect(self._render_changes)
-        row.addWidget(self.changes_from_combo)
-        arrow = QLabel("→"); row.addWidget(arrow)
-        self.changes_to_combo = QComboBox(); self.changes_to_combo.setMinimumWidth(200)
+        compare.addWidget(self.changes_from_combo)
+        # Painted app icon instead of a text glyph: no dependency on whatever font
+        # the user's machine picks for "→".
+        arrow = QLabel(); arrow.setPixmap(icon("arrow").pixmap(14, 14))
+        compare.addWidget(arrow)
+        self.changes_to_combo = self._polish_combo(QComboBox()); self.changes_to_combo.setMinimumWidth(140)
         self.changes_to_combo.currentIndexChanged.connect(self._render_changes)
-        row.addWidget(self.changes_to_combo)
+        compare.addWidget(self.changes_to_combo)
         self.changes_use_editor = QCheckBox("右侧用编辑器内容")
         self.changes_use_editor.setToolTip("直接和不保存的编辑内容比较，边写边看增删")
         self.changes_use_editor.toggled.connect(self._render_changes)
-        row.addWidget(self.changes_use_editor)
-        refresh = QPushButton("刷新"); refresh.setIcon(icon("refresh")); refresh.clicked.connect(self._refresh_changes)
-        row.addWidget(refresh); row.addStretch()
+        compare.addWidget(self.changes_use_editor)
+        compare.addStretch()
+        rows.addLayout(compare)
         self.changes_page.layout.addWidget(controls)
 
         self.changes_summary = QLabel("")
@@ -471,7 +503,40 @@ class MainWindow(QMainWindow):
         erow.addStretch()
         el.addLayout(erow)
         self.settings_page.layout.addWidget(export_card)
+        prompt_card = self._card()
+        pl = QVBoxLayout(prompt_card); pl.setContentsMargins(20, 16, 20, 16); pl.setSpacing(8)
+        pt = QLabel("交接提示词"); pt.setObjectName("cardTitle"); pl.addWidget(pt)
+        pdesc = QLabel("发给新 Agent 的开场提示词模板。{resume} 会被替换为恢复上下文全文，{project} 为项目名；模板里不写 {resume} 时上下文会自动附在末尾。保存后 Resume 页和 CLI 的 resume --prompt 都使用它。")
+        pdesc.setObjectName("pageSubtitle"); pdesc.setWordWrap(True); pl.addWidget(pdesc)
+        self.prompt_template_edit = QPlainTextEdit()
+        self.prompt_template_edit.setMinimumHeight(120)
+        try:
+            stored = load_config().get("agent_prompt_template")
+        except (ContextError, OSError):
+            stored = None
+        self.prompt_template_edit.setPlainText(stored or DEFAULT_AGENT_PROMPT_TEMPLATE)
+        pl.addWidget(self.prompt_template_edit)
+        prow = QHBoxLayout()
+        save_p = QPushButton("保存模板"); save_p.setIcon(icon("save")); save_p.clicked.connect(self._save_prompt_template); prow.addWidget(save_p)
+        reset_p = QPushButton("恢复默认"); reset_p.setIcon(icon("refresh")); reset_p.setToolTip("恢复出厂默认模板并保存"); reset_p.clicked.connect(self._reset_prompt_template); prow.addWidget(reset_p)
+        prow.addStretch()
+        pl.addLayout(prow)
+        self.settings_page.layout.addWidget(prompt_card)
         self.settings_page.layout.addStretch(); self.stack.addWidget(self.settings_page)
+
+    def _save_prompt_template(self) -> None:
+        try:
+            config = load_config()
+            config["agent_prompt_template"] = self.prompt_template_edit.toPlainText()
+            save_config(config)
+        except (ContextError, OSError) as exc:
+            self._show_error(exc); return
+        self._resume()
+        self._toast("交接提示词模板已保存")
+
+    def _reset_prompt_template(self) -> None:
+        self.prompt_template_edit.setPlainText(DEFAULT_AGENT_PROMPT_TEMPLATE)
+        self._save_prompt_template()
 
     def _card(self) -> QFrame:
         frame = QFrame(); frame.setObjectName("card"); frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred); return frame
@@ -509,25 +574,42 @@ class MainWindow(QMainWindow):
     def _navigate_by_key(self, key: str) -> None:
         keys = [x[0] for x in NAV] + ["checkpoint", "resume", "doctor", "settings"]; self._navigate(keys.index(key))
 
+    def _page_for_key(self, key: str) -> QWidget:
+        """Sidebar key -> stacked widget.
+
+        This must stay an explicit lookup. It used to be index arithmetic of the
+        form `index - len(NAV) + 1 + len(EDITABLE_FILES)`, which assumes NAV's
+        non-overview entries map 1:1 onto the EDITABLE_FILES editors. But "changes"
+        is also a NAV entry with its own stack slot, so every tool page below it
+        was shifted by one: Checkpoint opened Changes, Resume opened Checkpoint,
+        and so on.
+        """
+        if key == "overview":
+            return self.overview
+        if key == "changes":
+            return self.changes_page
+        for nav_key, filename, _ in NAV:
+            if nav_key == key:
+                return self.doc_pages[filename]
+        return {
+            "checkpoint": self.checkpoint_page,
+            "resume": self.resume_page,
+            "doctor": self.doctor_page,
+            "settings": self.settings_page,
+        }[key]
+
     def _navigate(self, index: int) -> None:
         # Keep the sidebar highlight in sync when navigation happens in code (the Overview
         # "打开 STATE.md" card button, _resume_page_focus). A real click sets the checked
         # state itself; a programmatic jump used to leave the highlight on the old entry.
         if 0 <= index < len(self.nav_buttons) and not self.nav_buttons[index].isChecked():
             self.nav_buttons[index].setChecked(True)
-        if index < len(NAV):
-            key, filename, _ = NAV[index]
-            if key == "overview":
-                widget = self.overview
-            elif key == "changes":
-                widget = self.changes_page
-            else:
-                widget = self.doc_pages[filename]
-            self.stack.setCurrentWidget(widget)
-            if key == "changes":
-                self._refresh_changes()
-        else:
-            self.stack.setCurrentIndex(index - len(NAV) + 1 + len(EDITABLE_FILES))
+        keys = [entry[0] for entry in NAV] + ["checkpoint", "resume", "doctor", "settings"]
+        key = keys[index]
+        widget = self._page_for_key(key)
+        self.stack.setCurrentWidget(widget)
+        if key == "changes":
+            self._refresh_changes()
 
     def _build_menu(self) -> None:
         menu = self.menuBar().addMenu("文件"); a = QAction("打开项目", self); a.setShortcut(QKeySequence("Ctrl+O")); a.triggered.connect(self._browse_project); menu.addAction(a); a = QAction("保存当前文件", self); a.setShortcut(QKeySequence("Ctrl+S")); a.triggered.connect(self._save_current); menu.addAction(a); a = QAction("复制填充提示词", self); a.setShortcut(QKeySequence("Ctrl+Shift+I")); a.triggered.connect(self._copy_bootstrap_prompt); menu.addAction(a); a = QAction("复制恢复指令", self); a.setShortcut(QKeySequence("Ctrl+Shift+R")); a.triggered.connect(self._copy_resume); menu.addAction(a); menu.addSeparator(); a = QAction("退出", self); a.triggered.connect(self.close); menu.addAction(a)
@@ -558,6 +640,10 @@ class MainWindow(QMainWindow):
         QComboBox:hover {{ border-color:{c['accent']}; }}
         QComboBox::drop-down {{ border:0; width:28px; }}
         QComboBox::down-arrow {{ image:none; border-left:4px solid transparent; border-right:4px solid transparent; border-top:5px solid {c['muted']}; margin-right:10px; }}
+        QComboBox QAbstractItemView {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:4px; outline:0; selection-background-color:{c['accent_soft']}; selection-color:{c['text']}; }}
+        QComboBox QAbstractItemView::item {{ min-height:28px; padding:2px 10px; border-radius:6px; margin:1px 3px; color:{c['text']}; }}
+        QComboBox QAbstractItemView::item:hover {{ background:{c['accent_soft']}; }}
+        QComboBox QAbstractItemView::item:selected {{ background:{c['accent_soft']}; color:{c['accent']}; font-weight:600; }}
         QPushButton {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:8px 14px; min-height:18px; }} QPushButton:hover {{ border-color:{c['accent']}; }} QPushButton#primary {{ background:{c['accent']}; color:white; border:0; }} QPushButton#primary:disabled {{ background:{c['accent']}; color:white; }}
         QRadioButton {{ spacing:8px; padding:4px; }} QListWidget::item {{ padding:10px; border-bottom:1px solid {c['line']}; }}
         QScrollBar:vertical {{ background:transparent; width:9px; margin:2px; border-radius:4px; }}

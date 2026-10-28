@@ -397,7 +397,7 @@ Output:
 
 ```text
 dist\agent-context\agent-context.exe                            (CLI)
-dist\Agent Context Manager v0.8\Agent Context Manager v0.8.exe  (Windows GUI)
+dist\Agent Context Manager v0.9\Agent Context Manager v0.9.exe  (Windows GUI)
 ```
 
 The Windows builds are **onedir**, not onefile: everything the app needs lives next

@@ -10,6 +10,10 @@
 
 ### Notes
 
+- Created `checkpoint-2026-10-25-145719.md` checkpoint (0 modified/untracked file(s)).
+
+- Created `checkpoint-2026-10-25-145626.md` checkpoint (0 modified/untracked file(s)).
+
 - Created `checkpoint-2026-10-25-140340.md` checkpoint (0 modified/untracked file(s)).
 
 - Created `checkpoint-2026-10-25-140133.md` checkpoint (0 modified/untracked file(s)).
@@ -62,3 +66,15 @@
 ### Added
 
 - 初版：`.agent/` Markdown 协议、CLI 全部基础命令、PySide6 GUI、unittest 测试套件。
+
+## 2026-10-25（0.8.1）
+
+### Fixed
+
+- 侧边栏工具页 off-by-one：Checkpoint/Resume/Doctor/Settings 各错开一页；`_navigate()` 改为 key→widget 显式映射，补回归测试 `tests/test_gui_pages.py`。
+- Changes 控制行挤压重叠：单行在默认 1200px 宽度就放不下，箭头被压进下拉框边框；改为两行布局 + 自绘 arrow 图标，补回归测试。
+
+### Released
+
+- v0.8.1 打包 onedir 并发布到 `D:\vibe code`（文件夹 + zip）；GitHub Release 未发。
+- 版本一致性测试改为按 major.minor 前缀比对，适配补丁版命名（强度不变）。

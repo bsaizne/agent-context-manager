@@ -4,6 +4,45 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-10-27
+
+### Added
+
+- **Configurable handoff prompt.** The prompt sent to a new agent (`resume
+  --prompt`, the GUI Resume page and its "copy to agent" actions) is now
+  rendered from a user-editable template stored as `agent_prompt_template` in
+  `~/.agent-context/config.json`. `{project}` becomes the project folder name
+  and `{resume}` the full resume text. A template without `{resume}` gets the
+  context appended automatically, and stray braces (JSON snippets, shell
+  examples) no longer break rendering. The stock default now tells the agent
+  to stop and wait for instructions instead of starting work on its own.
+  Edit it in the GUI Settings page.
+
+### Fixed
+
+- Every combobox dropdown popup (recent projects, the Changes page file and
+  version pickers) now follows the app theme: card background, rounded border,
+  accent selection. The popup list was previously drawn with native Windows
+  colors inside an otherwise flat, rounded UI.
+
+Both changes are covered by regression tests in `tests/test_resume.py`,
+`tests/test_config.py` and `tests/test_gui_pages.py`.
+
+## [0.8.1] - 2026-10-25
+
+### Fixed
+
+- Sidebar navigation: the tool pages were shifted by one slot - Checkpoint opened the
+  Changes page, Resume opened Checkpoint, Doctor opened Resume and Settings opened
+  Doctor. `_navigate()` located them with index arithmetic that ignored the Changes
+  page's own stack slot; it now resolves each sidebar key to its widget explicitly.
+- Changes page: the controls row could not fit at the default 1200px window width (the
+  file combo alone has a ~170px minimum), so QBoxLayout squeezed the compare arrow and
+  the "use editor content" checkbox on top of the combo borders, which read as an arrow
+  boxed into the combo. The controls are now two rows and the arrow is the painted app
+  icon instead of a text glyph.
+- Both fixes are covered by regression tests in `tests/test_gui_pages.py`.
+
 ## [0.8.0] - 2026-10-14
 
 ### Added

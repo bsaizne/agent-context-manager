@@ -247,7 +247,7 @@ def build_typer_app():
     @app.command("resume")
     def resume_command(
         path: Path | None = typer.Argument(None, help="Project directory."),
-        prompt: bool = typer.Option(False, "--prompt", help="Wrap resume in the minimal agent prompt."),
+        prompt: bool = typer.Option(False, "--prompt", help="Wrap resume in the user-configured handoff prompt template."),
     ):
         handle(lambda: cmd_resume(path, prompt=prompt))
 

@@ -390,7 +390,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 
 ```text
 dist\agent-context\agent-context.exe                            (CLI)
-dist\Agent Context Manager v0.8\Agent Context Manager v0.8.exe  (Windows GUI)
+dist\Agent Context Manager v0.9\Agent Context Manager v0.9.exe  (Windows GUI)
 ```
 
 Windows 产物是 **onedir** 而不是 onefile：程序需要的东西都放在可执行文件旁边，所以分发时必须带上整个文件夹。这是刻意的选择 —— onefile 版本每次启动都会把自己解压到 `%TEMP%`，而在 `%TEMP%` 已经损坏的机器上（例如存在连打开都失败的 `_MEI` 残留目录），引导器会在任何应用代码运行之前就报 `Could not create temporary directory!`。onedir 版本直接从自己的目录加载 DLL，完全不需要可写的 `%TEMP%`。

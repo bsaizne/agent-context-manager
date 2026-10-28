@@ -22,7 +22,13 @@ class VersionConsistencyTests(unittest.TestCase):
         spec = (ROOT / "agent-context-gui.spec").read_text(encoding="utf-8")
         match = re.search(r'name="Agent Context Manager v([0-9.]+)"', spec)
         self.assertIsNotNone(match)
-        self.assertEqual(match.group(1), ".".join(__version__.split(".")[:2]))
+        # The exe name carries either the full version (v0.8.1, patch releases)
+        # or just the minor (v0.8). Either way it must start with the package's
+        # major.minor - this still catches the historical 0.1.0-vs-v0.5 drift.
+        self.assertEqual(
+            match.group(1).split(".")[:2],
+            __version__.split(".")[:2],
+        )
 
 
 if __name__ == "__main__":

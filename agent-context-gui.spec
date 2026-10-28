@@ -83,7 +83,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Agent Context Manager v0.8",
+    name="Agent Context Manager v0.9.0",
     icon="assets/branding.ico",
     debug=False,
     bootloader_ignore_signals=False,
@@ -101,5 +101,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="Agent Context Manager v0.8",
+    name="Agent Context Manager v0.9.0",
 )
