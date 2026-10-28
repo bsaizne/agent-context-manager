@@ -2,11 +2,10 @@
 
 ## P0 — 当前
 
-- [ ] 无。v0.9.0 已提交并推送到 `origin/main`（`4ba0200`）；源码工作区无改动。
+- [ ] 无。v0.9.0 与档案刷新均已提交并推送（`4ba0200`、`3a53e3e`），工作区干净。
 
 ## P1 — 下一步
 
-- [ ] 提交本次 `.agent` 档案刷新（STATE/TODO/INDEX/DECISIONS/CHANGELOG 共 5 个文件）。
 - [ ] F1：L2 逐行溯源（blame）。在 `versions.py` 增加 blame，并在 Changes 页展示。
 - [ ] 把 `agent_prompt_template` 补进 `docs/ARCHITECTURE.md`（README 已有说明）。
 - [ ] 确认 GitHub Release v0.9.0 是否已发布（本地包已在 `D:\vibe code`）。

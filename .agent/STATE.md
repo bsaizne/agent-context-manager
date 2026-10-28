@@ -8,7 +8,7 @@ Agent Context Manager（Python 3.11+，CLI + PySide6 桌面 GUI）。本地优�
 
 ## Current Phase
 
-v0.9.0 已完成、提交并推送：`4ba0200` 在 `origin/main`。本次档案刷新后有 5 个 `.agent` 文件未提交（源码无改动）。本地发布包在 `D:\vibe code\Agent Context Manager`（2026-10-27）；GitHub Release v0.9.0 是否已发布待确认。
+v0.9.0 已完成、提交并推送：功能提交 `4ba0200`、档案刷新 `3a53e3e` 均在 `origin/main`，工作区干净。本地发布包在 `D:\vibe code\Agent Context Manager`（2026-10-27）；GitHub Release v0.9.0 是否已发布待确认。
 
 ## Current Task
 
@@ -32,7 +32,6 @@ F1：L2 逐行溯源（P1）——在 `versions.py` 增加 blame（遍历版本�
 1. 本机 `%TEMP%` 损坏：13 个不可访问的 `_MEI*` 残留，Python `mkdtemp` 会挂死；修它需要管理员权限。
 2. GitHub Release v0.9.0 的状态未确认（本地包已存在）。
 3. C 盘镜像是无 `.git` 的副本，代码改动若只在那里做不会进入版本历史（D9 的对策是改动回主仓库再做同步）。
-4. 本次刷新的 5 个 `.agent` 文件尚未提交（`4ba0200` 之后的工作区改动只有这些档案）。
 
 ## Current Implementation
 
@@ -75,4 +74,4 @@ D1 onedir｜D2 整份快照而非 patch｜D3 导入安全优先｜D4 版本号�
 
 ## Last Updated
 
-2026-10-28 22:43
+2026-10-28 22:48
