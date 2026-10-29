@@ -1,0 +1,59 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build and publish Windows bundle
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # A tag that does not match pyproject.toml (or the GUI spec, which carries
+      # the version in its exe name) would publish a package labelled with the
+      # wrong version. Fail before spending ten minutes on the build.
+      - name: Check version consistency
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME -replace '^v', ''
+          $declared = (python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])").Trim()
+          if ($tag -ne $declared) {
+            throw "Tag $env:GITHUB_REF_NAME does not match pyproject version $declared. Bump the version, commit, then re-tag."
+          }
+          $spec = Get-Content -LiteralPath 'agent-context-gui.spec' -Raw
+          $specName = [regex]::Match($spec, 'name\s*=\s*"([^"]+)"').Groups[1].Value
+          if ($specName -ne "Agent Context Manager v$declared") {
+            throw "agent-context-gui.spec builds '$specName' but the release version is $declared. Update the spec name."
+          }
+          "Version $declared is consistent across tag, pyproject and GUI spec."
+
+      - name: Install build dependencies
+        run: pip install -e ".[gui,package]"
+
+      - name: Build
+        shell: pwsh
+        run: ./scripts/build-windows.ps1 -Python python
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          New-Item -ItemType Directory -Path release -Force | Out-Null
+          Compress-Archive -Path 'dist/*' -DestinationPath "release/Agent.Context.Manager.v$version.zip"
+          Get-Item "release/Agent.Context.Manager.v$version.zip" | Select-Object Name, Length
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.zip
+          generate_release_notes: true
