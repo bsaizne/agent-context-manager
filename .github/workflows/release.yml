@@ -49,7 +49,13 @@ jobs:
         run: |
           $version = $env:GITHUB_REF_NAME -replace '^v', ''
           New-Item -ItemType Directory -Path release -Force | Out-Null
-          Compress-Archive -Path 'dist/*' -DestinationPath "release/Agent.Context.Manager.v$version.zip"
+          # The released bundle has always been the GUI folder only; the CLI build
+          # stays in dist for developers and would double the download size.
+          $gui = "dist/Agent Context Manager v$version"
+          if (-not (Test-Path -LiteralPath $gui)) {
+            throw "Missing GUI build output: $gui"
+          }
+          Compress-Archive -Path $gui -DestinationPath "release/Agent.Context.Manager.v$version.zip"
           Get-Item "release/Agent.Context.Manager.v$version.zip" | Select-Object Name, Length
 
       - name: Publish release
