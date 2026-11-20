@@ -139,23 +139,28 @@ class GuiPromptTemplateCardTests(unittest.TestCase):
 
 
 class GuiComboPopupTests(unittest.TestCase):
-    """The dropdown popup must carry the app theme, not native Windows colors.
+    """The dropdown popup must carry the app theme without Fusion/Windows artifacts.
 
-    The closed combo was styled by QSS but the popup list was not, so opening
-    "最近项目" showed a white square native menu inside an otherwise rounded,
-    flat themed window. _polish_combo() swaps in a QListView and makes the
-    popup frameless so the QComboBox QAbstractItemView QSS rules apply.
+    Three visual regressions were observed on Windows + Fusion:
+    1. Window-level `QMainWindow, QWidget { background: ... }` painted
+       QComboBoxPrivateContainer opaque, and its default StyledPanel frame drew
+       a sharp gray rectangle around the rounded QListView corners.
+    2. Fusion's SH_ComboBox_Popup overlaid the popup on top of the closed combo
+       and added top/bottom scroller strips; `combobox-popup: 0` disables that.
+    3. Opening "最近项目" displayed the non-selectable placeholder row (row 0)
+       highlighted at the top of the list even when real recent projects existed.
     """
 
     def test_every_combobox_uses_frameless_polished_popup(self) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import QApplication, QListView  # noqa: F401
-        from agent_context.gui import MainWindow
+        from PySide6.QtWidgets import QFrame, QListView
+        from agent_context.gui import MainWindow, _ComboItemDelegate
 
         app = _qt_app()
         with tempfile.TemporaryDirectory() as tmp:
             window = MainWindow(tmp)
+            self.assertIn("combobox-popup:0;", window.styleSheet())
             combos = [
                 window.recent_combo,
                 window.changes_file_combo,
@@ -164,10 +169,63 @@ class GuiComboPopupTests(unittest.TestCase):
             ]
             for combo in combos:
                 with self.subTest(combo=combo.objectName() or combo.toolTip() or str(combo)):
-                    self.assertIsInstance(combo.view(), QListView)
-                    flags = combo.view().window().windowFlags()
+                    view = combo.view()
+                    self.assertIsInstance(view, QListView)
+                    self.assertIsInstance(view.itemDelegate(), _ComboItemDelegate)
+                    popup = view.window()
+                    flags = popup.windowFlags()
                     self.assertTrue(flags & Qt.FramelessWindowHint)
                     self.assertTrue(flags & Qt.NoDropShadowWindowHint)
+                    self.assertTrue(popup.testAttribute(Qt.WA_TranslucentBackground))
+                    self.assertEqual(popup.objectName(), "comboPopupContainer")
+                    if isinstance(popup, QFrame):
+                        self.assertEqual(popup.frameShape(), QFrame.Shape.NoFrame)
+                    self.assertIn("background: transparent", popup.styleSheet())
+            app.processEvents()
+
+    def test_recent_combo_hides_placeholder_row_and_survives_theme_switch(self) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QGraphicsDropShadowEffect
+        from agent_context.gui import MainWindow
+
+        app = _qt_app()
+        with tempfile.TemporaryDirectory() as tmp:
+            window = MainWindow(tmp)
+            combo = window.recent_combo
+            self.assertEqual(combo.objectName(), "recentProjectCombo")
+
+            # When recent projects exist, row 0 ("最近项目") stays as closed
+            # display text while being hidden inside the open dropdown list.
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("最近项目", "")
+            combo.addItem("alpha", str(Path(tmp) / "alpha"))
+            combo.addItem("beta", str(Path(tmp) / "beta"))
+            combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+
+            combo._adjust_popup()
+            self.assertTrue(combo.view().isRowHidden(0))
+            self.assertFalse(combo.view().isRowHidden(1))
+            self.assertFalse(combo.view().isRowHidden(2))
+
+            # With no recent projects, keep row 0 visible so the popup isn't blank.
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("最近项目", "")
+            combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+            combo._adjust_popup()
+            self.assertFalse(combo.view().isRowHidden(0))
+
+            # Switching between dark and light themes must refresh popup styling
+            # and elevation shadow without error.
+            for mode, expected_card in (("dark", "#2C2C2E"), ("light", "#FFFFFF")):
+                with self.subTest(theme=mode):
+                    window.theme_mode = mode
+                    window._apply_theme()
+                    self.assertIn(expected_card, combo.view().styleSheet())
+                    self.assertIsInstance(combo.view().graphicsEffect(), QGraphicsDropShadowEffect)
             app.processEvents()
 
 

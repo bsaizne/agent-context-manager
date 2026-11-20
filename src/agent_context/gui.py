@@ -24,16 +24,17 @@ from pathlib import Path
 # packaging/qt_runtime_hook.py did exactly what the comment above warns about. It
 # was referenced by no spec and has been deleted in 0.5; do not reconnect it.
 
-from PySide6.QtCore import QObject, QSettings, QThread, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QPoint, QPointF, QRectF, QSettings, QSize, QThread, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
-    QAction, QColor, QFont, QIcon, QKeySequence, QSyntaxHighlighter, QTextCharFormat,
-    QTextCursor, QTextFormat,
+    QAction, QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
+    QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextFormat,
 )
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QListView, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
-    QComboBox, QRadioButton, QScrollArea, QSizePolicy, QStackedWidget, QStatusBar, QTextEdit,
-    QToolButton, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QCheckBox, QFileDialog, QFrame, QGraphicsDropShadowEffect,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QListView, QMainWindow,
+    QMessageBox, QPlainTextEdit, QPushButton, QComboBox, QRadioButton, QScrollArea, QSizePolicy,
+    QStackedWidget, QStatusBar, QStyle, QStyledItemDelegate, QTextEdit, QToolButton, QVBoxLayout,
+    QWidget,
 )
 
 from .archive import list_archives, read_archive
@@ -195,6 +196,218 @@ class Page(QWidget):
         self.layout.addLayout(heading)
 
 
+_COMBO_SHADOW_L = 8
+_COMBO_SHADOW_T = 4
+_COMBO_SHADOW_R = 8
+_COMBO_SHADOW_B = 12
+_COMBO_POPUP_GAP = 4
+_COMBO_ROW_H = 34
+_COMBO_LIST_PAD = 4
+
+
+def _norm_project_path(raw: object) -> str:
+    if not raw:
+        return ""
+    try:
+        return os.path.normcase(os.path.normpath(str(raw)))
+    except OSError:
+        return str(raw)
+
+
+class _ComboItemDelegate(QStyledItemDelegate):
+    """Paint rounded dropdown rows with centered text and an active checkmark.
+
+    Styling QComboBox QAbstractItemView::item purely via QSS leaves uneven
+    top/bottom padding under Fusion and cannot mark the currently loaded
+    project when recent_combo's currentIndex is reset to the placeholder (0).
+    """
+
+    def __init__(self, window: MainWindow, combo: QComboBox, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._window = window
+        self._combo = combo
+
+    def sizeHint(self, option, index) -> QSize:
+        sh = super().sizeHint(option, index)
+        return QSize(sh.width(), _COMBO_ROW_H)
+
+    def _is_active_item(self, index) -> bool:
+        if self._combo.objectName() == "recentProjectCombo":
+            cur = _norm_project_path(getattr(self._window, "project_path", ""))
+            item_path = _norm_project_path(index.data(Qt.ItemDataRole.UserRole))
+            return bool(cur and item_path and cur == item_path)
+        return index.row() == self._combo.currentIndex()
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        painter.save()
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            c = getattr(self._window, "_palette", None) or {}
+            dark = c.get("bg", "").upper() == "#1C1C1E"
+            text_col = QColor(c.get("text", "#F5F5F7" if dark else "#1D1D1F"))
+            accent_col = QColor(c.get("accent", "#5B9EF4" if dark else "#2775D3"))
+            accent_soft = QColor(91, 158, 244, 46) if dark else QColor(39, 117, 211, 26)
+            hover_col = QColor(255, 255, 255, 18) if dark else QColor(0, 0, 0, 12)
+
+            is_hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+            is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
+            is_active = self._is_active_item(index)
+
+            pill_rect = QRectF(option.rect).adjusted(1.0, 1.5, -1.0, -1.5)
+            path = QPainterPath()
+            path.addRoundedRect(pill_rect, 6.0, 6.0)
+            if is_active:
+                painter.fillPath(path, accent_soft)
+            elif is_hover or is_selected:
+                painter.fillPath(path, hover_col)
+
+            font = QFont(option.font)
+            if is_active:
+                font.setWeight(QFont.Weight.DemiBold)
+            painter.setFont(font)
+            painter.setPen(accent_col if is_active else text_col)
+
+            right_pad = 28 if is_active else 10
+            text_rect = option.rect.adjusted(10, 0, -right_pad, 0)
+            raw_text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+            elided = QFontMetrics(font).elidedText(
+                raw_text, Qt.TextElideMode.ElideRight, max(20, text_rect.width())
+            )
+            painter.drawText(
+                text_rect,
+                int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+                elided,
+            )
+
+            if is_active:
+                cx = option.rect.right() - 18.0
+                cy = option.rect.center().y() + 0.5
+                pen = QPen(
+                    accent_col, 1.7, Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin,
+                )
+                painter.setPen(pen)
+                check = QPainterPath()
+                check.moveTo(QPointF(cx - 4.0, cy + 0.2))
+                check.lineTo(QPointF(cx - 1.2, cy + 3.0))
+                check.lineTo(QPointF(cx + 4.2, cy - 2.8))
+                painter.drawPath(check)
+        finally:
+            painter.restore()
+
+
+class _ThemedComboBox(QComboBox):
+    """QComboBox with a painted chevron and aligned frameless dropdown popup.
+
+    Two Fusion/Windows quirks are fixed here:
+    1. QSS transparent-border triangles render as flat rectangles in Qt, so we
+       paint an antialiased vector chevron matching icons.py's stroke weight.
+    2. Hiding the non-selectable "最近项目" placeholder row (row 0) leaves a
+       blank row at the bottom unless we resize and align the popup explicitly.
+    """
+
+    def __init__(self, window: MainWindow, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._window = window
+        self._popup_open = False
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            c = getattr(self._window, "_palette", None) or {}
+            dark = c.get("bg", "").upper() == "#1C1C1E"
+            color_key = "accent" if self._popup_open else "muted"
+            default_hex = ("#5B9EF4" if dark else "#2775D3") if self._popup_open else ("#98989D" if dark else "#6E6E73")
+            pen = QPen(
+                QColor(c.get(color_key, default_hex)), 1.7, Qt.PenStyle.SolidLine,
+                Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin,
+            )
+            painter.setPen(pen)
+            cx = self.width() - 16.0
+            cy = self.height() / 2.0
+            chevron = QPainterPath()
+            if self._popup_open:
+                chevron.moveTo(QPointF(cx - 3.8, cy + 1.8))
+                chevron.lineTo(QPointF(cx, cy - 2.0))
+                chevron.lineTo(QPointF(cx + 3.8, cy + 1.8))
+            else:
+                chevron.moveTo(QPointF(cx - 3.8, cy - 1.8))
+                chevron.lineTo(QPointF(cx, cy + 2.0))
+                chevron.lineTo(QPointF(cx + 3.8, cy - 1.8))
+            painter.drawPath(chevron)
+        finally:
+            painter.end()
+
+    def showPopup(self) -> None:
+        self._popup_open = True
+        self.update()
+        super().showPopup()
+        self._adjust_popup()
+
+    def hidePopup(self) -> None:
+        self._popup_open = False
+        super().hidePopup()
+        self.update()
+
+    def _adjust_popup(self) -> None:
+        view = self.view()
+        if view is None:
+            return
+        popup = view.window()
+        if popup is None:
+            return
+
+        count = self.count()
+        hide_first = (
+            self.objectName() == "recentProjectCombo"
+            and count > 1
+            and self.itemData(0) in (None, "")
+        )
+        if isinstance(view, QListView):
+            for row in range(count):
+                view.setRowHidden(row, hide_first and row == 0)
+
+        if hide_first and self.currentIndex() == 0:
+            view.clearSelection()
+
+        visible_rows = max(1, min(count - (1 if hide_first else 0), self.maxVisibleItems(), 10))
+        list_h = visible_rows * _COMBO_ROW_H + (_COMBO_LIST_PAD * 2) + 2
+
+        fm = QFontMetrics(view.font())
+        max_text_w = 0
+        for row in range(count):
+            if hide_first and row == 0:
+                continue
+            max_text_w = max(max_text_w, fm.horizontalAdvance(self.itemText(row)))
+        ideal_w = max(self.width(), min(max_text_w + 54, 360))
+
+        view.setFixedWidth(ideal_w)
+        view.setFixedHeight(list_h)
+
+        total_w = ideal_w + _COMBO_SHADOW_L + _COMBO_SHADOW_R
+        total_h = list_h + _COMBO_SHADOW_T + _COMBO_SHADOW_B
+
+        below = self.mapToGlobal(QPoint(0, self.height() + _COMBO_POPUP_GAP))
+        x = below.x() - _COMBO_SHADOW_L
+        y = below.y() - _COMBO_SHADOW_T
+
+        screen = QApplication.screenAt(below) or QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            if y + total_h > avail.bottom():
+                above = self.mapToGlobal(QPoint(0, -_COMBO_POPUP_GAP))
+                y = above.y() - list_h - _COMBO_SHADOW_T
+            if x + total_w > avail.right():
+                x = avail.right() - total_w
+            if x < avail.left() - _COMBO_SHADOW_L:
+                x = avail.left() - _COMBO_SHADOW_L
+
+        popup.setFixedSize(total_w, total_h)
+        popup.move(x, y)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, initial_path: str | Path | None = None) -> None:
         super().__init__(); self.settings = QSettings(QSettings.IniFormat, QSettings.UserScope, "Agent Context Manager", "Agent Context Manager")
@@ -204,6 +417,7 @@ class MainWindow(QMainWindow):
         self.current_status: ProjectStatus | None = None; self.nav_buttons: list[QToolButton] = []
         self.checkpoint_thread: QThread | None = None; self.checkpoint_worker: CheckpointWorker | None = None
         self.checkpoint_buttons: list[QPushButton] = []
+        self._polished_combos: list[QComboBox] = []
         self._pending_external_changes: list[str] = []
         self._project_load_message = ""
         # Cache key of the last rendered overview. _update_overview() rebuilds about 186
@@ -244,7 +458,7 @@ class MainWindow(QMainWindow):
 
         content = QWidget(); content_layout = QVBoxLayout(content); content_layout.setContentsMargins(0, 0, 0, 0); content_layout.setSpacing(0)
         top = QFrame(); top.setObjectName("topbar"); top_layout = QHBoxLayout(top); top_layout.setContentsMargins(28, 18, 28, 18)
-        self.recent_combo = self._polish_combo(QComboBox()); self.recent_combo.setMinimumWidth(220); self.recent_combo.setToolTip("最近打开的项目"); self.recent_combo.currentIndexChanged.connect(self._recent_project_selected); top_layout.addWidget(self.recent_combo)
+        self.recent_combo = self._polish_combo(_ThemedComboBox(self)); self.recent_combo.setObjectName("recentProjectCombo"); self.recent_combo.setMinimumWidth(220); self.recent_combo.setToolTip("最近打开的项目"); self.recent_combo.currentIndexChanged.connect(self._recent_project_selected); top_layout.addWidget(self.recent_combo)
         self.path_edit = QLineEdit(); self.path_edit.setPlaceholderText("项目目录"); self.path_edit.returnPressed.connect(self._open_project); top_layout.addWidget(self.path_edit, 1)
         browse = QPushButton("浏览"); browse.setIcon(icon("folder")); browse.clicked.connect(self._browse_project); top_layout.addWidget(browse)
         open_btn = QPushButton("打开"); open_btn.setIcon(icon("arrow")); open_btn.clicked.connect(self._open_project); top_layout.addWidget(open_btn); content_layout.addWidget(top)
@@ -259,18 +473,42 @@ class MainWindow(QMainWindow):
     def _polish_combo(self, combo: QComboBox) -> QComboBox:
         """Frame the dropdown popup so the QSS gives it the themed look.
 
-        The popup is a separate top-level window. Left alone it renders with
-        native platform colors (white, square, system-blue selection) even
-        though the closed combo is fully styled, and the default container
-        draws a system drop shadow that clashes with the flat theme. A plain
-        QListView plus a frameless, translucent popup window lets the
-        QComboBox QAbstractItemView stylesheet rules (rounded border, accent
-        selection) show through to the corners.
+        The popup is a separate top-level QComboBoxPrivateContainer (a QFrame).
+        Without stripping its frame shape and giving it an explicit transparent
+        stylesheet, the window-level `QMainWindow, QWidget { background: ... }`
+        rule paints an opaque gray rectangle around the rounded QListView, and
+        Fusion's default StyledPanel draws a sharp outer border at the corners.
         """
-        combo.setView(QListView())
-        popup = combo.view().window()
+        view = QListView(combo)
+        view.setObjectName("comboPopupList")
+        view.setFrameShape(QFrame.Shape.NoFrame)
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        view.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
+        view.setMouseTracking(True)
+        view.setSpacing(0)
+        view.setUniformItemSizes(True)
+        view.setItemDelegate(_ComboItemDelegate(self, combo, view))
+        view.viewport().setAutoFillBackground(False)
+        combo.setView(view)
+
+        popup = view.window()
+        popup.setObjectName("comboPopupContainer")
+        if isinstance(popup, QFrame):
+            popup.setFrameShape(QFrame.Shape.NoFrame)
+            popup.setFrameShadow(QFrame.Shadow.Plain)
+            popup.setLineWidth(0)
+            popup.setMidLineWidth(0)
+        popup.setAutoFillBackground(False)
         popup.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         popup.setAttribute(Qt.WA_TranslucentBackground, True)
+        popup.setStyleSheet("QFrame#comboPopupContainer { background: transparent; border: none; }")
+        layout = popup.layout()
+        if layout is not None:
+            layout.setContentsMargins(_COMBO_SHADOW_L, _COMBO_SHADOW_T, _COMBO_SHADOW_R, _COMBO_SHADOW_B)
+            layout.setSpacing(0)
+
+        if combo not in self._polished_combos:
+            self._polished_combos.append(combo)
         return combo
 
     def _make_pages(self) -> None:
@@ -298,7 +536,7 @@ class MainWindow(QMainWindow):
         # as "arrow boxed into the combo".
         top = QHBoxLayout(); top.setSpacing(8)
         top.addWidget(QLabel("文件"))
-        self.changes_file_combo = self._polish_combo(QComboBox()); self.changes_file_combo.addItems(EDITABLE_FILES)
+        self.changes_file_combo = self._polish_combo(_ThemedComboBox(self)); self.changes_file_combo.addItems(EDITABLE_FILES)
         self.changes_file_combo.currentIndexChanged.connect(self._refresh_changes)
         top.addWidget(self.changes_file_combo)
         top.addStretch()
@@ -307,14 +545,14 @@ class MainWindow(QMainWindow):
         rows.addLayout(top)
         compare = QHBoxLayout(); compare.setSpacing(8)
         compare.addWidget(QLabel("对比"))
-        self.changes_from_combo = self._polish_combo(QComboBox()); self.changes_from_combo.setMinimumWidth(140)
+        self.changes_from_combo = self._polish_combo(_ThemedComboBox(self)); self.changes_from_combo.setMinimumWidth(140)
         self.changes_from_combo.currentIndexChanged.connect(self._render_changes)
         compare.addWidget(self.changes_from_combo)
         # Painted app icon instead of a text glyph: no dependency on whatever font
         # the user's machine picks for "→".
         arrow = QLabel(); arrow.setPixmap(icon("arrow").pixmap(14, 14))
         compare.addWidget(arrow)
-        self.changes_to_combo = self._polish_combo(QComboBox()); self.changes_to_combo.setMinimumWidth(140)
+        self.changes_to_combo = self._polish_combo(_ThemedComboBox(self)); self.changes_to_combo.setMinimumWidth(140)
         self.changes_to_combo.currentIndexChanged.connect(self._render_changes)
         compare.addWidget(self.changes_to_combo)
         self.changes_use_editor = QCheckBox("右侧用编辑器内容")
@@ -636,14 +874,12 @@ class MainWindow(QMainWindow):
         QScrollArea#overviewScroll {{ background:transparent; border:0; }}
         QFrame#card QScrollArea {{ background:transparent; border:0; }}
         QFrame#card {{ background:{c['card']}; border:1px solid {c['line']}; border-radius:12px; }} QLineEdit, QPlainTextEdit, QListWidget {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:8px; }}
-        QComboBox {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:8px 32px 8px 12px; min-height:18px; }}
-        QComboBox:hover {{ border-color:{c['accent']}; }}
-        QComboBox::drop-down {{ border:0; width:28px; }}
-        QComboBox::down-arrow {{ image:none; border-left:4px solid transparent; border-right:4px solid transparent; border-top:5px solid {c['muted']}; margin-right:10px; }}
-        QComboBox QAbstractItemView {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:4px; outline:0; selection-background-color:{c['accent_soft']}; selection-color:{c['text']}; }}
-        QComboBox QAbstractItemView::item {{ min-height:28px; padding:2px 10px; border-radius:6px; margin:1px 3px; color:{c['text']}; }}
-        QComboBox QAbstractItemView::item:hover {{ background:{c['accent_soft']}; }}
-        QComboBox QAbstractItemView::item:selected {{ background:{c['accent_soft']}; color:{c['accent']}; font-weight:600; }}
+        QComboBox {{ combobox-popup:0; background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:7px 32px 7px 12px; min-height:20px; }}
+        QComboBox:hover, QComboBox:on {{ border-color:{c['accent']}; }}
+        QComboBox::drop-down {{ subcontrol-origin:padding; subcontrol-position:top right; border:0; width:30px; background:transparent; }}
+        QComboBox::down-arrow {{ image:none; border:0; width:0; height:0; }}
+        QFrame#comboPopupContainer {{ background:transparent; border:none; }}
+        QComboBox QAbstractItemView, QListView#comboPopupList {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:10px; padding:{_COMBO_LIST_PAD}px; outline:0; }}
         QPushButton {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:8px 14px; min-height:18px; }} QPushButton:hover {{ border-color:{c['accent']}; }} QPushButton#primary {{ background:{c['accent']}; color:white; border:0; }} QPushButton#primary:disabled {{ background:{c['accent']}; color:white; }}
         QRadioButton {{ spacing:8px; padding:4px; }} QListWidget::item {{ padding:10px; border-bottom:1px solid {c['line']}; }}
         QScrollBar:vertical {{ background:transparent; width:9px; margin:2px; border-radius:4px; }}
@@ -659,7 +895,28 @@ class MainWindow(QMainWindow):
 
         """)
         self._palette = c
+        self._apply_combo_theme(c, dark)
         self._apply_diff_colors()
+
+    def _apply_combo_theme(self, c: dict[str, str], dark: bool) -> None:
+        view_qss = (
+            f"QListView#comboPopupList {{ background:{c['card']}; color:{c['text']}; "
+            f"border:1px solid {c['line']}; border-radius:10px; padding:{_COMBO_LIST_PAD}px; outline:0; }}"
+        )
+        for combo in self._polished_combos:
+            view = combo.view()
+            if view is None:
+                continue
+            popup = view.window()
+            if popup is not None:
+                popup.setStyleSheet("QFrame#comboPopupContainer { background: transparent; border: none; }")
+            view.setStyleSheet(view_qss)
+            shadow = QGraphicsDropShadowEffect(view)
+            shadow.setBlurRadius(18)
+            shadow.setOffset(0, 4)
+            shadow.setColor(QColor(0, 0, 0, 115 if dark else 34))
+            view.setGraphicsEffect(shadow)
+            combo.update()
 
     def _browse_project(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "选择项目目录", str(self.project_path))
