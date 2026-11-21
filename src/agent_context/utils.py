@@ -172,7 +172,8 @@ def compact_lines(text: str, limit: int = 6) -> list[str]:
 
 
 def count_markdown_tasks(text: str) -> int:
-    return sum(1 for line in text.splitlines() if line.lstrip().startswith("- ["))
+    # Count only unchecked tasks (`- [ ]`); completed `- [x]`/`- [X]` items are no longer pending.
+    return sum(1 for line in text.splitlines() if line.lstrip().startswith("- [ ]"))
 
 
 def bullet_list(values: Iterable[str]) -> str:
