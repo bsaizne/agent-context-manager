@@ -228,6 +228,65 @@ class GuiComboPopupTests(unittest.TestCase):
                     self.assertIsInstance(combo.view().graphicsEffect(), QGraphicsDropShadowEffect)
             app.processEvents()
 
+    def test_open_popup_never_creates_opaque_roll_effect_window(self) -> None:
+        """Regression: opening a dropdown flashed a black box for ~150ms.
+
+        With Windows' "slide open combo boxes" on, Qt enables UI_AnimateCombo
+        and animates the popup through a QRollEffect, an opaque top-level that
+        repaints a snapshot of the translucent popup, so its transparent corners
+        and shadow margin showed black. showPopup() must suppress that effect
+        (and restore the global flag) while still fading the real popup in.
+        """
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import QEvent, QObject, Qt
+        from PySide6.QtWidgets import QApplication, QWidget
+        from agent_context.gui import MainWindow
+
+        app = _qt_app()
+        created: list[str] = []
+
+        class _Spy(QObject):
+            def eventFilter(self, obj, event):  # noqa: N802 - Qt API name
+                if event.type() == QEvent.Type.Show and isinstance(obj, QWidget) and obj.isWindow():
+                    created.append(obj.metaObject().className())
+                return False
+
+        spy = _Spy()
+        # isEffectEnabled(UI_AnimateCombo) also requires UI_General, which the
+        # offscreen platform leaves off; enable both so Qt really would roll.
+        previous = {
+            eff: QApplication.isEffectEnabled(eff)
+            for eff in (Qt.UIEffect.UI_General, Qt.UIEffect.UI_AnimateCombo)
+        }
+        QApplication.setEffectEnabled(Qt.UIEffect.UI_General, True)
+        QApplication.setEffectEnabled(Qt.UIEffect.UI_AnimateCombo, True)
+        self.assertTrue(QApplication.isEffectEnabled(Qt.UIEffect.UI_AnimateCombo))
+        app.installEventFilter(spy)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                window = MainWindow(tmp)
+                window.show()
+                combo = window.recent_combo
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItem("最近项目", "")
+                combo.addItem("alpha", str(Path(tmp) / "alpha"))
+                combo.setCurrentIndex(0)
+                combo.blockSignals(False)
+
+                combo.showPopup()
+                app.processEvents()
+                self.assertNotIn("QRollEffect", created)
+                self.assertTrue(QApplication.isEffectEnabled(Qt.UIEffect.UI_AnimateCombo))
+                self.assertIsNotNone(combo._popup_anim)
+                combo.hidePopup()
+                self.assertIsNone(combo._popup_anim)
+                window.close()
+        finally:
+            app.removeEventFilter(spy)
+            for eff, enabled in previous.items():
+                QApplication.setEffectEnabled(eff, enabled)
+
 
 if __name__ == "__main__":
     unittest.main()

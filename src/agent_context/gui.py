@@ -24,7 +24,10 @@ from pathlib import Path
 # packaging/qt_runtime_hook.py did exactly what the comment above warns about. It
 # was referenced by no spec and has been deleted in 0.5; do not reconnect it.
 
-from PySide6.QtCore import QObject, QPoint, QPointF, QRectF, QSettings, QSize, QThread, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import (
+    QEasingCurve, QObject, QParallelAnimationGroup, QPoint, QPointF, QPropertyAnimation, QRectF,
+    QSettings, QSize, QThread, Qt, QTimer, Signal, Slot,
+)
 from PySide6.QtGui import (
     QAction, QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
     QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextFormat,
@@ -203,6 +206,8 @@ _COMBO_SHADOW_B = 12
 _COMBO_POPUP_GAP = 4
 _COMBO_ROW_H = 34
 _COMBO_LIST_PAD = 4
+_COMBO_FADE_MS = 140
+_COMBO_SLIDE_PX = 6
 
 
 def _norm_project_path(raw: object) -> str:
@@ -299,17 +304,20 @@ class _ComboItemDelegate(QStyledItemDelegate):
 class _ThemedComboBox(QComboBox):
     """QComboBox with a painted chevron and aligned frameless dropdown popup.
 
-    Two Fusion/Windows quirks are fixed here:
+    Three Fusion/Windows quirks are fixed here:
     1. QSS transparent-border triangles render as flat rectangles in Qt, so we
        paint an antialiased vector chevron matching icons.py's stroke weight.
     2. Hiding the non-selectable "最近项目" placeholder row (row 0) leaves a
        blank row at the bottom unless we resize and align the popup explicitly.
+    3. Qt's QRollEffect open animation flashes a black box around the
+       translucent popup; see showPopup() for the replacement fade/slide.
     """
 
     def __init__(self, window: MainWindow, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._window = window
         self._popup_open = False
+        self._popup_anim: QParallelAnimationGroup | None = None
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
@@ -343,21 +351,79 @@ class _ThemedComboBox(QComboBox):
     def showPopup(self) -> None:
         self._popup_open = True
         self.update()
-        super().showPopup()
-        self._adjust_popup()
+        view = self.view()
+        popup = view.window() if view is not None else None
+        if self._popup_anim is not None:
+            self._popup_anim.stop()
+            self._popup_anim = None
+
+        # Qt's own combo animation must stay off for this call. When Windows'
+        # "slide open combo boxes" setting is on, Qt enables UI_AnimateCombo
+        # and plays a QRollEffect: it snapshots the popup and repaints that
+        # snapshot on an *opaque* top-level window for ~150ms. The popup's
+        # rounded corners and shadow margin are transparent, so they flashed as
+        # a black rectangle; the roll also used the pre-_adjust_popup geometry
+        # (still counting the hidden placeholder row), so the block jumped size
+        # when it vanished. We replace it with a fade/slide on the real
+        # translucent window, and only when the user has animations enabled.
+        animate = QApplication.isEffectEnabled(Qt.UIEffect.UI_AnimateCombo)
+        if popup is not None:
+            # Shown invisible first: super().showPopup() maps the window at Qt's
+            # default geometry before _adjust_popup() can move/resize it.
+            popup.setWindowOpacity(0.0)
+        QApplication.setEffectEnabled(Qt.UIEffect.UI_AnimateCombo, False)
+        try:
+            super().showPopup()
+        finally:
+            QApplication.setEffectEnabled(Qt.UIEffect.UI_AnimateCombo, animate)
+
+        target, opens_up = self._adjust_popup()
+        if popup is None or target is None:
+            if popup is not None:
+                popup.setWindowOpacity(1.0)
+            return
+        if not animate:
+            popup.setWindowOpacity(1.0)
+            return
+
+        offset = _COMBO_SLIDE_PX if opens_up else -_COMBO_SLIDE_PX
+        popup.move(target.x(), target.y() + offset)
+        group = QParallelAnimationGroup(self)
+        fade = QPropertyAnimation(popup, b"windowOpacity")
+        fade.setDuration(_COMBO_FADE_MS)
+        fade.setStartValue(0.0)
+        fade.setEndValue(1.0)
+        fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+        slide = QPropertyAnimation(popup, b"pos")
+        slide.setDuration(_COMBO_FADE_MS)
+        slide.setStartValue(QPoint(target.x(), target.y() + offset))
+        slide.setEndValue(target)
+        slide.setEasingCurve(QEasingCurve.Type.OutCubic)
+        group.addAnimation(fade)
+        group.addAnimation(slide)
+        self._popup_anim = group
+        group.start()
 
     def hidePopup(self) -> None:
         self._popup_open = False
+        if self._popup_anim is not None:
+            self._popup_anim.stop()
+            self._popup_anim = None
         super().hidePopup()
         self.update()
 
-    def _adjust_popup(self) -> None:
+    def _adjust_popup(self) -> tuple[QPoint | None, bool]:
+        """Size the popup to its visible rows and place it under (or above) the combo.
+
+        Returns the final top-left position and whether the popup opens upward,
+        so showPopup() can slide in from the correct side.
+        """
         view = self.view()
         if view is None:
-            return
+            return None, False
         popup = view.window()
         if popup is None:
-            return
+            return None, False
 
         count = self.count()
         hide_first = (
@@ -393,12 +459,14 @@ class _ThemedComboBox(QComboBox):
         x = below.x() - _COMBO_SHADOW_L
         y = below.y() - _COMBO_SHADOW_T
 
+        opens_up = False
         screen = QApplication.screenAt(below) or QApplication.primaryScreen()
         if screen is not None:
             avail = screen.availableGeometry()
             if y + total_h > avail.bottom():
                 above = self.mapToGlobal(QPoint(0, -_COMBO_POPUP_GAP))
                 y = above.y() - list_h - _COMBO_SHADOW_T
+                opens_up = True
             if x + total_w > avail.right():
                 x = avail.right() - total_w
             if x < avail.left() - _COMBO_SHADOW_L:
@@ -406,6 +474,7 @@ class _ThemedComboBox(QComboBox):
 
         popup.setFixedSize(total_w, total_h)
         popup.move(x, y)
+        return QPoint(x, y), opens_up
 
 
 class MainWindow(QMainWindow):
