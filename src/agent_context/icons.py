@@ -47,6 +47,13 @@ def _draw_icon(painter: QPainter, name: str) -> None:
         for y in (7, 12, 17):
             painter.drawRoundedRect(5, y - 2, 3, 3, 0.8, 0.8)
             painter.drawLine(11, y, 19, y)
+    elif name == "index":
+        # Open map / module directory lines for INDEX.md.
+        painter.drawRoundedRect(4, 4, 16, 16, 2.5, 2.5)
+        painter.drawLine(9, 4, 9, 20)
+        painter.drawLine(12, 9, 17, 9)
+        painter.drawLine(12, 13, 17, 13)
+        painter.drawLine(12, 17, 15, 17)
     elif name == "decisions":
         painter.drawRoundedRect(5, 4, 14, 16, 2, 2)
         painter.drawLine(8, 9, 16, 9)

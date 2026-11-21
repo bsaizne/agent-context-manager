@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import ctypes
+import re
 import subprocess
 import time
 import os
@@ -60,9 +61,39 @@ from .versions import (
 
 EDITABLE_FILES = ["STATE.md", "TODO.md", "INDEX.md", "DECISIONS.md", "CHANGELOG.md"]
 NAV = [("overview", "Overview", "概览"), ("state", "STATE.md", "状态"), ("tasks", "TODO.md", "任务"),
+       ("index", "INDEX.md", "索引"),
        ("decisions", "DECISIONS.md", "决策"), ("changelog", "CHANGELOG.md", "变更记录"),
        # "changes" is not an editor page: _navigate() routes it to self.changes_page.
        ("changes", "Changes", "变更")]
+
+
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_INLINE_BOLD_RE = re.compile(r"\*\*([^\n*]+?)\*\*")
+
+
+def _render_inline_markdown(text: str, code_bg: str = "rgba(128,128,128,0.14)") -> str:
+    """Convert simple inline Markdown (**bold**, `code`) to safe Qt rich text.
+
+    STATE.md entries often contain bold highlights and backticked filenames.
+    Escaping first prevents arbitrary HTML injection; rendering code spans
+    before bold keeps literal asterisks inside code untouched.
+    """
+    escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    placeholders: list[str] = []
+
+    def _stash_code(match: re.Match[str]) -> str:
+        snippet = (
+            f'<span style="background:{code_bg}; padding:1px 4px; border-radius:4px; '
+            f'font-family:\'Cascadia Mono\',monospace;">{match.group(1)}</span>'
+        )
+        placeholders.append(snippet)
+        return f"\x00CODE{len(placeholders) - 1}\x00"
+
+    rendered = _INLINE_CODE_RE.sub(_stash_code, escaped)
+    rendered = _INLINE_BOLD_RE.sub(r"<b>\1</b>", rendered)
+    for idx, snippet in enumerate(placeholders):
+        rendered = rendered.replace(f"\x00CODE{idx}\x00", snippet)
+    return rendered
 
 
 def resource_path(name: str) -> Path:
@@ -487,6 +518,8 @@ class MainWindow(QMainWindow):
         self.checkpoint_thread: QThread | None = None; self.checkpoint_worker: CheckpointWorker | None = None
         self.checkpoint_buttons: list[QPushButton] = []
         self._polished_combos: list[QComboBox] = []
+        self._themed_icons: list[tuple[QPushButton | QToolButton, str]] = []
+        self._guide_expanded = False
         self._pending_external_changes: list[str] = []
         self._project_load_message = ""
         # Cache key of the last rendered overview. _update_overview() rebuilds about 186
@@ -522,22 +555,22 @@ class MainWindow(QMainWindow):
         for key, text in [("checkpoint", "Checkpoint"), ("resume", "Resume"), ("doctor", "Doctor")]:
             b = self._nav_button(key, text); self.nav_group.addButton(b); side.addWidget(b); self.nav_buttons.append(b)
         side.addStretch(); self.project_name = QLabel("未加载项目"); self.project_name.setObjectName("sidebarProject"); self.project_name.setWordWrap(True); side.addWidget(self.project_name)
-        settings = self._nav_button("settings", "Settings"); self.nav_group.addButton(settings); side.addWidget(settings)
+        settings = self._nav_button("settings", "Settings"); self.nav_group.addButton(settings); side.addWidget(settings); self.nav_buttons.append(settings)
         outer.addWidget(self.sidebar)
 
         content = QWidget(); content_layout = QVBoxLayout(content); content_layout.setContentsMargins(0, 0, 0, 0); content_layout.setSpacing(0)
         top = QFrame(); top.setObjectName("topbar"); top_layout = QHBoxLayout(top); top_layout.setContentsMargins(28, 18, 28, 18)
         self.recent_combo = self._polish_combo(_ThemedComboBox(self)); self.recent_combo.setObjectName("recentProjectCombo"); self.recent_combo.setMinimumWidth(220); self.recent_combo.setToolTip("最近打开的项目"); self.recent_combo.currentIndexChanged.connect(self._recent_project_selected); top_layout.addWidget(self.recent_combo)
         self.path_edit = QLineEdit(); self.path_edit.setPlaceholderText("项目目录"); self.path_edit.returnPressed.connect(self._open_project); top_layout.addWidget(self.path_edit, 1)
-        browse = QPushButton("浏览"); browse.setIcon(icon("folder")); browse.clicked.connect(self._browse_project); top_layout.addWidget(browse)
-        open_btn = QPushButton("打开"); open_btn.setIcon(icon("arrow")); open_btn.clicked.connect(self._open_project); top_layout.addWidget(open_btn); content_layout.addWidget(top)
+        browse = QPushButton("浏览"); browse.setIcon(icon("folder")); browse.clicked.connect(self._browse_project); top_layout.addWidget(browse); self._themed_icons.append((browse, "folder"))
+        open_btn = QPushButton("打开"); open_btn.setIcon(icon("arrow")); open_btn.clicked.connect(self._open_project); top_layout.addWidget(open_btn); self._themed_icons.append((open_btn, "arrow")); content_layout.addWidget(top)
         self.stack = QStackedWidget(); content_layout.addWidget(self.stack, 1); outer.addWidget(content, 1); self.setCentralWidget(shell)
         self.setStatusBar(QStatusBar()); self.statusBar().showMessage("请选择项目目录")
         self._refresh_recent_projects()
         self._make_pages(); self.nav_buttons[0].setChecked(True); self._navigate(0)
 
     def _nav_button(self, key: str, text: str) -> QToolButton:
-        button = QToolButton(); button.setObjectName("navButton"); button.setText(text); button.setIcon(icon(key)); button.setIconSize(icon(key).availableSizes()[0] if icon(key).availableSizes() else button.sizeHint()); button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon); button.setCheckable(True); button.setAutoExclusive(True); button.clicked.connect(lambda: self._navigate_by_key(key)); return button
+        button = QToolButton(); button.setObjectName("navButton"); button.setProperty("navKey", key); button.setText(text); button.setIcon(icon(key)); button.setIconSize(icon(key).availableSizes()[0] if icon(key).availableSizes() else button.sizeHint()); button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon); button.setCheckable(True); button.setAutoExclusive(True); button.clicked.connect(lambda: self._navigate_by_key(key)); return button
 
     def _polish_combo(self, combo: QComboBox) -> QComboBox:
         """Frame the dropdown popup so the QSS gives it the themed look.
@@ -848,14 +881,37 @@ class MainWindow(QMainWindow):
     def _card(self) -> QFrame:
         frame = QFrame(); frame.setObjectName("card"); frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred); return frame
 
-    def _usage_card(self) -> QFrame:
+    def _usage_card(self, collapsible: bool = False) -> QFrame:
         card = self._card()
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 16, 20, 16)
-        layout.setSpacing(6)
-        title = QLabel("使用方法")
-        title.setObjectName("cardTitle")
-        layout.addWidget(title)
+        layout.setContentsMargins(20, 14 if collapsible else 16, 20, 14 if collapsible else 16)
+        layout.setSpacing(8)
+        steps_box = QWidget()
+        steps_box.setObjectName("cardInner")
+        steps_layout = QVBoxLayout(steps_box)
+        steps_layout.setContentsMargins(0, 4 if collapsible else 0, 0, 0)
+        steps_layout.setSpacing(8)
+
+        if collapsible:
+            toggle = QToolButton()
+            toggle.setObjectName("guideToggle")
+            toggle.setCheckable(True)
+            toggle.setChecked(self._guide_expanded)
+            toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+
+            def _sync_toggle(expanded: bool) -> None:
+                self._guide_expanded = expanded
+                toggle.setText("使用方法  ▾" if expanded else "使用方法  ▸")
+                steps_box.setVisible(expanded)
+
+            _sync_toggle(self._guide_expanded)
+            toggle.toggled.connect(_sync_toggle)
+            layout.addWidget(toggle)
+        else:
+            title = QLabel("使用方法")
+            title.setObjectName("cardTitle")
+            layout.addWidget(title)
+
         steps = [
             ("1", "打开项目目录", "选择你正在开发的项目根目录。每个项目都会使用自己的 .agent 文件夹。"),
             ("2", "首次使用先初始化", "初始化只创建上下文模板，不会清空聊天记录，也不会清空项目代码。"),
@@ -875,7 +931,8 @@ class MainWindow(QMainWindow):
             text.setObjectName("guideText")
             text.setWordWrap(True)
             row.addWidget(text, 1)
-            layout.addLayout(row)
+            steps_layout.addLayout(row)
+        layout.addWidget(steps_box)
         return card
 
     def _navigate_by_key(self, key: str) -> None:
@@ -915,6 +972,7 @@ class MainWindow(QMainWindow):
         key = keys[index]
         widget = self._page_for_key(key)
         self.stack.setCurrentWidget(widget)
+        self._refresh_icons()
         if key == "changes":
             self._refresh_changes()
 
@@ -930,10 +988,17 @@ class MainWindow(QMainWindow):
         c = {"bg": "#1C1C1E" if dark else "#F5F5F7", "side": "#2C2C2E" if dark else "#F2F2F7", "card": "#2C2C2E" if dark else "#FFFFFF", "text": "#F5F5F7" if dark else "#1D1D1F", "muted": "#98989D" if dark else "#6E6E73", "line": "#48484A" if dark else "#D2D2D7", "accent": "#5B9EF4" if dark else "#2775D3", "scroll": "rgba(255,255,255,0.24)" if dark else "rgba(0,0,0,0.22)", "scroll_hover": "rgba(255,255,255,0.38)" if dark else "rgba(0,0,0,0.35)", "accent_soft": "rgba(91,158,244,0.20)" if dark else "rgba(39,117,211,0.10)", "diff_add": "#1E3A2B" if dark else "#E6F4EA", "diff_del": "#4A1F1F" if dark else "#FCE8E6"}
         self.setStyleSheet(f"""
         QMainWindow, QWidget {{ background:{c['bg']}; color:{c['text']}; font-family:'Segoe UI'; font-size:10pt; }}
-        QMenuBar, QStatusBar {{ background:{c['bg']}; color:{c['text']}; border:0; }} QMenuBar::item:selected {{ background:{c['side']}; }}
+        QLabel {{ background:transparent; }}
+        QMenuBar, QStatusBar {{ background:{c['bg']}; color:{c['text']}; border:0; }} QMenuBar::item:selected {{ background:{c['side']}; border-radius:4px; }}
+        QMenu {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:4px; }}
+        QMenu::item {{ padding:6px 14px; border-radius:6px; }}
+        QMenu::item:selected {{ background:{c['accent_soft']}; color:{c['accent']}; }}
+        QMenu::separator {{ height:1px; background:{c['line']}; margin:4px 8px; }}
         QFrame#sidebar {{ background:{c['side']}; border-right:1px solid {c['line']}; }} QFrame#topbar {{ background:{c['bg']}; border-bottom:1px solid {c['line']}; }}
         QLabel#brandMark {{ background:transparent; padding:0; }} QLabel#brandName {{ font-weight:650; font-size:14px; }} QLabel#eyebrow {{ color:{c['muted']}; font-size:10px; font-weight:700; }} QLabel#sidebarProject, QLabel#pageSubtitle, QLabel#muted {{ color:{c['muted']}; }}
-        QToolButton#navButton {{ text-align:left; border:0; border-radius:8px; padding:9px 10px; color:{c['muted']}; }} QToolButton#navButton:hover {{ background:{c['line']}; color:{c['text']}; }} QToolButton#navButton:checked {{ background:{c['card']}; color:{c['accent']}; font-weight:600; }}
+        QToolButton#navButton {{ text-align:left; border:0; border-radius:8px; padding:9px 10px; background:transparent; color:{c['muted']}; }} QToolButton#navButton:hover {{ background:{c['line']}; color:{c['text']}; }} QToolButton#navButton:checked {{ background:{c['card']}; color:{c['accent']}; font-weight:600; }}
+        QToolButton#guideToggle {{ text-align:left; border:0; padding:2px 0; background:transparent; color:{c['muted']}; font-size:13px; font-weight:600; }}
+        QToolButton#guideToggle:hover {{ color:{c['text']}; }}
         QLabel#pageTitle {{ font-size:28px; font-weight:650; }} QLabel#cardTitle {{ font-size:16px; font-weight:650; }}
         QLabel#guideNumber {{ background:{c['accent']}; color:white; border-radius:13px; font-size:12px; font-weight:700; }}
         QLabel#guideText {{ color:{c['text']}; line-height:135%; }}
@@ -941,7 +1006,7 @@ class MainWindow(QMainWindow):
         QToolButton#bannerClose {{ border:0; background:transparent; color:{c['muted']}; font-size:15px; padding:2px 8px; }}
         QToolButton#bannerClose:hover {{ color:{c['text']}; }}
         QScrollArea#overviewScroll {{ background:transparent; border:0; }}
-        QFrame#card QScrollArea {{ background:transparent; border:0; }}
+        QFrame#card QScrollArea, QFrame#card QWidget#cardInner, QFrame#card QRadioButton, QFrame#card QCheckBox {{ background:transparent; border:0; }}
         QFrame#card {{ background:{c['card']}; border:1px solid {c['line']}; border-radius:12px; }} QLineEdit, QPlainTextEdit, QListWidget {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:8px; }}
         QComboBox {{ combobox-popup:0; background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:7px 32px 7px 12px; min-height:20px; }}
         QComboBox:hover, QComboBox:on {{ border-color:{c['accent']}; }}
@@ -965,7 +1030,19 @@ class MainWindow(QMainWindow):
         """)
         self._palette = c
         self._apply_combo_theme(c, dark)
+        self._refresh_icons()
         self._apply_diff_colors()
+
+    def _refresh_icons(self) -> None:
+        c = getattr(self, "_palette", None)
+        if not c:
+            return
+        for button in self.nav_buttons:
+            key = button.property("navKey")
+            if key:
+                button.setIcon(icon(str(key), c["accent"] if button.isChecked() else c["muted"]))
+        for button, icon_name in self._themed_icons:
+            button.setIcon(icon(icon_name, c["muted"]))
 
     def _apply_combo_theme(self, c: dict[str, str], dark: bool) -> None:
         view_qss = (
@@ -1063,7 +1140,9 @@ class MainWindow(QMainWindow):
         ordered = [current] + [str(item) for item in paths if str(item) != current]
         self.recent_combo.blockSignals(True); self.recent_combo.clear()
         self.recent_combo.addItem("最近项目", "")
-        for item in ordered[:8]: self.recent_combo.addItem(Path(item).name or item, item)
+        for item in ordered[:8]:
+            self.recent_combo.addItem(Path(item).name or item, item)
+            self.recent_combo.setItemData(self.recent_combo.count() - 1, item, Qt.ItemDataRole.ToolTipRole)
         self.recent_combo.setCurrentIndex(0); self.recent_combo.blockSignals(False)
 
     def _remember_project(self, path: Path) -> None:
@@ -1352,15 +1431,21 @@ class MainWindow(QMainWindow):
         hero_scroll.setFrameShape(QFrame.NoFrame)
         hero_scroll.setMaximumHeight(160); hero_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff); hero_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded); hero_scroll.viewport().setStyleSheet("background:transparent;")
         hero_content = QWidget()
+        hero_content.setObjectName("cardInner")
         hl = QVBoxLayout(hero_content)
-        hl.setContentsMargins(20,16,20,16)
-        hero_content.setMinimumWidth(600)
+        hl.setContentsMargins(20, 16, 20, 16)
+        hl.setSpacing(6)
         hh = QLabel(status.project_path.name)
         hh.setObjectName("cardTitle")
         hl.addWidget(hh)
-        hl.addWidget(QLabel(f"当前阶段  {status.phase}"))
-        task = QLabel(f"当前任务  {status.task}")
+        code_bg = "rgba(255,255,255,0.10)" if getattr(self, "_palette", {}).get("bg", "").upper() == "#1C1C1E" else "rgba(0,0,0,0.06)"
+        phase_label = QLabel(f"当前阶段  {_render_inline_markdown(status.phase, code_bg)}")
+        phase_label.setTextFormat(Qt.TextFormat.RichText)
+        phase_label.setWordWrap(True)
+        hl.addWidget(phase_label)
+        task = QLabel(f"当前任务  {_render_inline_markdown(status.task, code_bg)}")
         task.setObjectName("pageSubtitle")
+        task.setTextFormat(Qt.TextFormat.RichText)
         task.setWordWrap(True)
         hl.addWidget(task)
         latest_name, latest_mtime = self._latest_activity()
@@ -1372,7 +1457,6 @@ class MainWindow(QMainWindow):
         hero_scroll.setWidget(hero_content)
         hero_outer.addWidget(hero_scroll)
         self.overview_grid.addWidget(hero)
-        self.overview_grid.addWidget(self._usage_card())
 
         stats = QHBoxLayout()
         for title, value in [("待办 P0", status.p0_count), ("待办 P1", status.p1_count), ("待办 P2", status.p2_count), ("Git", "已连接" if status.git_info.repository_detected else "未连接")]:
@@ -1437,7 +1521,9 @@ class MainWindow(QMainWindow):
             t1.setObjectName("pageSubtitle")
             t1.setWordWrap(True)
             tl.addWidget(t1)
-            self.overview_grid.addWidget(tok); actions = QHBoxLayout(); actions.setSpacing(12); bp = QPushButton("复制填充提示词"); bp.setMinimumWidth(146); bp.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed); bp.setIcon(icon("copy")); bp.setToolTip("复制让当前 Agent 扫描项目并填充上下文文件的提示词"); bp.clicked.connect(self._copy_bootstrap_prompt); actions.addWidget(bp); cp = QPushButton("保存进度"); cp.setObjectName("primary"); cp.setMinimumWidth(132); cp.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed); cp.setIcon(icon("checkpoint", "#FFFFFF")); cp.setToolTip("保存所有上下文文件并创建 Checkpoint"); cp.clicked.connect(self._checkpoint); self.checkpoint_buttons.append(cp); actions.addWidget(cp); rs = QPushButton("复制给 Agent"); rs.setMinimumWidth(128); rs.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed); rs.setIcon(icon("copy")); rs.setToolTip("复制可直接发给新 Agent 的恢复指令"); rs.clicked.connect(self._copy_resume); actions.addWidget(rs); actions.addStretch(); self.overview_grid.addLayout(actions); self.overview_grid.addStretch()
+            self.overview_grid.addWidget(tok); actions = QHBoxLayout(); actions.setSpacing(12); bp = QPushButton("复制填充提示词"); bp.setMinimumWidth(146); bp.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed); bp.setIcon(icon("copy")); bp.setToolTip("复制让当前 Agent 扫描项目并填充上下文文件的提示词"); bp.clicked.connect(self._copy_bootstrap_prompt); actions.addWidget(bp); cp = QPushButton("保存进度"); cp.setObjectName("primary"); cp.setMinimumWidth(132); cp.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed); cp.setIcon(icon("checkpoint", "#FFFFFF")); cp.setToolTip("保存所有上下文文件并创建 Checkpoint"); cp.clicked.connect(self._checkpoint); self.checkpoint_buttons.append(cp); actions.addWidget(cp); rs = QPushButton("复制给 Agent"); rs.setMinimumWidth(128); rs.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed); rs.setIcon(icon("copy")); rs.setToolTip("复制可直接发给新 Agent 的恢复指令"); rs.clicked.connect(self._copy_resume); actions.addWidget(rs); actions.addStretch(); self.overview_grid.addLayout(actions)
+        self.overview_grid.addWidget(self._usage_card(collapsible=True))
+        self.overview_grid.addStretch()
 
     def _resume_page_focus(self) -> None: self._navigate_by_key("resume")
     def _save_current(self) -> None:

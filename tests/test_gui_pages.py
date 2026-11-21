@@ -39,6 +39,7 @@ class GuiPageRoutingTests(unittest.TestCase):
                 "overview": window.overview,
                 "state": window.doc_pages["STATE.md"],
                 "tasks": window.doc_pages["TODO.md"],
+                "index": window.doc_pages["INDEX.md"],
                 "decisions": window.doc_pages["DECISIONS.md"],
                 "changelog": window.doc_pages["CHANGELOG.md"],
                 "changes": window.changes_page,
@@ -286,6 +287,76 @@ class GuiComboPopupTests(unittest.TestCase):
             app.removeEventFilter(spy)
             for eff, enabled in previous.items():
                 QApplication.setEffectEnabled(eff, enabled)
+
+
+class GuiOverviewPolishTests(unittest.TestCase):
+    """Regressions for overview readability, transparent card labels, and tooltips.
+
+    1. Global `QMainWindow, QWidget { background: bg }` painted gray bars behind
+       labels inside white/dark cards until `QLabel` and `#cardInner` were made
+       explicitly transparent.
+    2. Raw Markdown (`**bold**`, `` `code` ``) leaked into Overview phase/task
+       labels and long phase text clipped on the right because word-wrap was off.
+    3. The 5-step onboarding guide sat permanently above metrics even after a
+       project was loaded; it is now collapsible and collapsed by default once
+       loaded.
+    """
+
+    def test_inline_markdown_escapes_html_and_formats_bold_and_code(self) -> None:
+        from agent_context.gui import _render_inline_markdown
+
+        rendered = _render_inline_markdown("完成 **发布**，处理 `a*b.xlsx` & <script>")
+        self.assertIn("<b>发布</b>", rendered)
+        self.assertIn("a*b.xlsx</span>", rendered)
+        self.assertIn("&lt;script&gt;", rendered)
+        self.assertNotIn("<script>", rendered)
+
+    def test_loaded_overview_wraps_hero_collapses_guide_and_sets_recent_tooltips(self) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QLabel, QToolButton
+        from agent_context.gui import MainWindow
+        from agent_context.project import init_project
+
+        app = _qt_app()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "demo-proj"
+            project.mkdir()
+            init_project(project)
+            window = MainWindow(project)
+
+            qss = window.styleSheet()
+            self.assertIn("QLabel { background:transparent; }", qss)
+            self.assertIn("QMenu {", qss)
+
+            # Hero phase & task labels must wrap so long lines never clip.
+            hero_labels = [
+                lbl for lbl in window.overview.findChildren(QLabel)
+                if lbl.text().startswith("当前阶段") or lbl.text().startswith("当前任务")
+            ]
+            self.assertEqual(len(hero_labels), 2)
+            for lbl in hero_labels:
+                self.assertTrue(lbl.wordWrap())
+
+            # Guide card is collapsible and starts collapsed when a project is loaded.
+            toggles = [
+                btn for btn in window.overview.findChildren(QToolButton)
+                if btn.objectName() == "guideToggle"
+            ]
+            self.assertEqual(len(toggles), 1)
+            self.assertFalse(toggles[0].isChecked())
+            toggles[0].click()
+            self.assertTrue(toggles[0].isChecked())
+            self.assertTrue(window._guide_expanded)
+
+            # Recent project entries expose full directory path as tooltip.
+            self.assertGreaterEqual(window.recent_combo.count(), 2)
+            self.assertEqual(
+                window.recent_combo.itemData(1, Qt.ItemDataRole.ToolTipRole),
+                str(project),
+            )
+            window.close()
+            app.processEvents()
 
 
 if __name__ == "__main__":
