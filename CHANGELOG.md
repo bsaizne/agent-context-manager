@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-11-21
+
+### Added
+
+- Sidebar now includes an `INDEX.md` entry so all context files are reachable from navigation.
+- Recent-project dropdown items now expose their full filesystem path as a tooltip.
+
+### Changed
+
+- Overview page polish: inline Markdown (`**bold**` and `` `code` ``) is rendered with word wrapping on phase/task summaries, the usage guide card is collapsible and starts collapsed once a project is loaded, card/sidebar surface backgrounds and `QMenu` popups match the active theme without gray stripes, and navigation/topbar icons re-tint cleanly when switching themes.
+
+### Fixed
+
+- Project selector dropdown (`_ThemedComboBox`): replaced Qt's native Windows `QRollEffect` snapshot animation (which briefly flashed an opaque black box around the translucent popup) with a smooth fade + slide animation on the real popup, hid the placeholder row when real projects exist, and drew antialiased chevrons and pill-style selection rows.
+- Pending TODO counts (`count_markdown_tasks`): now count only unchecked `- [ ]` items instead of all `- [` lines, so completed `- [x]`/`- [X]` tasks decrease the P0/P1/P2 counters.
+
 ## [0.9.0] - 2026-10-27
 
 ### Added
