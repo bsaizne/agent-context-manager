@@ -561,9 +561,10 @@ class MainWindow(QMainWindow):
         content = QWidget(); content_layout = QVBoxLayout(content); content_layout.setContentsMargins(0, 0, 0, 0); content_layout.setSpacing(0)
         top = QFrame(); top.setObjectName("topbar"); top_layout = QHBoxLayout(top); top_layout.setContentsMargins(28, 18, 28, 18)
         self.recent_combo = self._polish_combo(_ThemedComboBox(self)); self.recent_combo.setObjectName("recentProjectCombo"); self.recent_combo.setMinimumWidth(220); self.recent_combo.setToolTip("最近打开的项目"); self.recent_combo.currentIndexChanged.connect(self._recent_project_selected); top_layout.addWidget(self.recent_combo)
-        self.path_edit = QLineEdit(); self.path_edit.setPlaceholderText("项目目录"); self.path_edit.returnPressed.connect(self._open_project); top_layout.addWidget(self.path_edit, 1)
-        browse = QPushButton("浏览"); browse.setIcon(icon("folder")); browse.clicked.connect(self._browse_project); top_layout.addWidget(browse); self._themed_icons.append((browse, "folder"))
-        open_btn = QPushButton("打开"); open_btn.setIcon(icon("arrow")); open_btn.clicked.connect(self._open_project); top_layout.addWidget(open_btn); self._themed_icons.append((open_btn, "arrow")); content_layout.addWidget(top)
+        self.path_edit = QLineEdit(); self.path_edit.setPlaceholderText("项目目录（输入路径后按回车切换）"); self.path_edit.returnPressed.connect(self._open_project); top_layout.addWidget(self.path_edit, 1)
+        self.switch_btn = QPushButton("切换"); self.switch_btn.setObjectName("primary"); self.switch_btn.setIcon(icon("arrow", "#FFFFFF")); self.switch_btn.setToolTip("加载输入框中的项目目录（也可直接按回车）"); self.switch_btn.clicked.connect(self._open_project); self.switch_btn.setVisible(False); top_layout.addWidget(self.switch_btn)
+        self.path_edit.textChanged.connect(self._sync_path_switch_button)
+        self.browse_btn = QPushButton("选择目录"); self.browse_btn.setIcon(icon("folder")); self.browse_btn.setToolTip("选择项目目录并直接加载"); self.browse_btn.clicked.connect(self._browse_project); top_layout.addWidget(self.browse_btn); self._themed_icons.append((self.browse_btn, "folder")); content_layout.addWidget(top)
         self.stack = QStackedWidget(); content_layout.addWidget(self.stack, 1); outer.addWidget(content, 1); self.setCentralWidget(shell)
         self.setStatusBar(QStatusBar()); self.statusBar().showMessage("请选择项目目录")
         self._refresh_recent_projects()
@@ -1064,6 +1065,18 @@ class MainWindow(QMainWindow):
             view.setGraphicsEffect(shadow)
             combo.update()
 
+    def _sync_path_switch_button(self) -> None:
+        raw = self.path_edit.text().strip()
+        if not raw:
+            self.switch_btn.setVisible(False)
+            return
+        current = str(self.project_path).strip()
+        changed = (
+            os.path.normcase(os.path.normpath(raw)) != os.path.normcase(os.path.normpath(current))
+            if current else True
+        )
+        self.switch_btn.setVisible(changed)
+
     def _browse_project(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "选择项目目录", str(self.project_path))
         if selected: self.path_edit.setText(selected); self._open_project()
@@ -1084,7 +1097,7 @@ class MainWindow(QMainWindow):
         self._project_load_message = ""
         if persist:
             self.settings.setValue("project_path", str(path)); self._remember_project(path); self.settings.sync()
-        self.path_edit.setText(str(path)); self.project_name.setText(path.name or str(path)); self.file_paths = context_file_paths(path)
+        self.path_edit.setText(str(path)); self._sync_path_switch_button(); self.project_name.setText(path.name or str(path)); self.file_paths = context_file_paths(path)
         if discovered_path is not None and discovered_path != requested_path:
             self._toast(f"已定位到项目根目录: {path}")
         if not path.exists() or not path.is_dir(): self.current_status = None; self._clear_views(); self._toast("项目目录不存在"); return

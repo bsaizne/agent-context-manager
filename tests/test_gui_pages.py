@@ -358,6 +358,36 @@ class GuiOverviewPolishTests(unittest.TestCase):
             window.close()
             app.processEvents()
 
+    def test_topbar_hides_switch_button_until_path_edited(self) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from agent_context.gui import MainWindow
+
+        app = _qt_app()
+        with tempfile.TemporaryDirectory() as tmp:
+            p1 = Path(tmp) / "proj-a"
+            p2 = Path(tmp) / "proj-b"
+            p1.mkdir()
+            p2.mkdir()
+            window = MainWindow(p1)
+
+            self.assertEqual(window.browse_btn.text(), "选择目录")
+            self.assertTrue(window.switch_btn.isHidden())
+
+            window.path_edit.setText(str(p2))
+            self.assertFalse(window.switch_btn.isHidden())
+
+            window.path_edit.setText(str(p1))
+            self.assertTrue(window.switch_btn.isHidden())
+
+            window.path_edit.setText(str(p2))
+            self.assertFalse(window.switch_btn.isHidden())
+            window.switch_btn.click()
+            self.assertEqual(window.project_path, p2.resolve())
+            self.assertTrue(window.switch_btn.isHidden())
+
+            window.close()
+            app.processEvents()
+
 
 if __name__ == "__main__":
     unittest.main()
