@@ -389,5 +389,206 @@ class GuiOverviewPolishTests(unittest.TestCase):
             app.processEvents()
 
 
+class GuiDeleteProjectTests(unittest.TestCase):
+    """Verify remove-from-app vs delete-folder project deletion and safety guards."""
+
+    def test_dialog_defaults_to_remove_only_and_requires_name_for_folder_delete(self) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from agent_context.gui import DeleteProjectDialog, _protected_delete_reason
+
+        _qt_app()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "sample-app"
+            project.mkdir()
+            dlg = DeleteProjectDialog(project)
+
+            self.assertFalse(dlg.delete_folder)
+            self.assertTrue(dlg.confirm_btn.isEnabled())
+            self.assertEqual(dlg.confirm_btn.objectName(), "primary")
+            self.assertTrue(dlg.danger_box.isHidden())
+
+            dlg.delete_folder_radio.setChecked(True)
+            self.assertTrue(dlg.delete_folder)
+            self.assertTrue(dlg.use_trash)
+            self.assertFalse(dlg.danger_box.isHidden())
+            self.assertEqual(dlg.confirm_btn.objectName(), "danger")
+            self.assertFalse(dlg.confirm_btn.isEnabled())
+
+            dlg.confirm_edit.setText("wrong-name")
+            self.assertFalse(dlg.confirm_btn.isEnabled())
+            dlg.confirm_edit.setText("sample-app")
+            self.assertTrue(dlg.confirm_btn.isEnabled())
+
+            dlg.trash_checkbox.setChecked(False)
+            self.assertFalse(dlg.use_trash)
+            dlg.close()
+
+        # High-risk directories must be protected from folder deletion.
+        home = Path.home()
+        self.assertIsNotNone(_protected_delete_reason(home))
+        self.assertIsNotNone(_protected_delete_reason(Path(home.anchor)))
+        home_dlg = DeleteProjectDialog(home)
+        self.assertFalse(home_dlg.delete_folder_radio.isEnabled())
+        home_dlg.close()
+
+    def test_remove_from_app_and_delete_folder_with_readonly_file(self) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        import stat
+        from agent_context.gui import MainWindow
+
+        app = _qt_app()
+        with tempfile.TemporaryDirectory() as tmp:
+            p1 = Path(tmp) / "proj-one"
+            p2 = Path(tmp) / "proj-two"
+            p1.mkdir()
+            p2.mkdir()
+            ro = p1 / "readonly.txt"
+            ro.write_text("locked", encoding="utf-8")
+            os.chmod(ro, stat.S_IREAD)
+
+            window = MainWindow(p1)
+            prev_project = window.settings.value("project_path", "", type=str)
+            prev_recent = window.settings.value("recent_projects", [], type=list) or []
+            try:
+                window.settings.setValue("recent_projects", [str(p1), str(p2)])
+                window._set_project_path(p2, persist=True)
+                self.assertEqual(window.project_path, p2.resolve())
+
+                # 1) Remove p2 from app only: folder stays on disk, switches back to p1.
+                self.assertTrue(window._execute_delete_project(p2.resolve(), delete_folder=False))
+                self.assertTrue(p2.exists())
+                self.assertEqual(window.project_path, p1.resolve())
+                recent_items = [
+                    window.recent_combo.itemData(i)
+                    for i in range(1, window.recent_combo.count())
+                ]
+                self.assertNotIn(str(p2.resolve()), recent_items)
+
+                # 2) Delete p1 folder permanently (with read-only file): folder gone, enters empty state.
+                self.assertTrue(
+                    window._execute_delete_project(p1.resolve(), delete_folder=True, use_trash=False)
+                )
+                self.assertFalse(p1.exists())
+                self.assertFalse(window._has_project)
+                self.assertEqual(window.path_edit.text(), "")
+                self.assertFalse(window.delete_btn.isEnabled())
+                self.assertEqual(window.recent_combo.count(), 1)
+            finally:
+                window.settings.setValue("project_path", prev_project)
+                window.settings.setValue("recent_projects", prev_recent)
+                window.settings.sync()
+                if ro.exists():
+                    os.chmod(ro, stat.S_IWRITE)
+                window.close()
+                app.processEvents()
+
+
+class GuiDoctorAndLimitsTests(unittest.TestCase):
+    """Verify actionable Doctor page, trim prompt, and Settings line-limit controls."""
+
+    def test_doctor_sorts_warnings_first_drops_duplicate_check_and_jumps_on_double_click(self) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from agent_context.config import load_config
+        from agent_context.gui import MainWindow
+        from agent_context.project import init_project
+
+        app = _qt_app()
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_dir = Path(tmp) / "cfg"
+            cfg_dir.mkdir()
+            old_cfg_env = os.environ.get("AGENT_CONTEXT_CONFIG_DIR")
+            os.environ["AGENT_CONTEXT_CONFIG_DIR"] = str(cfg_dir)
+            try:
+                project = Path(tmp) / "demo"
+                project.mkdir()
+                init_project(project)
+                todo_path = project / ".agent" / "TODO.md"
+                # Exceed default 100-line limit with completed items so warning triggers.
+                done_lines = "\n".join(f"- [x] Done item {i}" for i in range(110))
+                todo_path.write_text(
+                    f"# TODO\n\n## P0 — Current\n\n{done_lines}\n- [ ] Still pending\n",
+                    encoding="utf-8",
+                )
+
+                window = MainWindow(project)
+                self.assertIn("QPushButton:disabled", window.styleSheet())
+                self.assertFalse(hasattr(window, "doctor_trim_btn"))
+                window._navigate_by_key("doctor")
+
+                self.assertGreater(window.doctor_list.count(), 0)
+                first_text = window.doctor_list.item(0).text()
+                # Warning must be pinned to the top and show a Chinese suggestion, with no duplicate checkmark prefix.
+                self.assertIn("TODO.md 行数检查", first_text)
+                self.assertIn("建议：", first_text)
+                for i in range(window.doctor_list.count()):
+                    self.assertFalse(window.doctor_list.item(i).text().startswith("✓"))
+
+                # Archive button is shown when checked items exist and hidden when none remain.
+                self.assertIn("(110)", window.doctor_archive_btn.text())
+                self.assertFalse(window.doctor_archive_btn.isHidden())
+
+                # Resume automatically carries a Maintenance note when over limit.
+                self.assertIn("Maintenance:", window.resume_view.toPlainText())
+
+                # Double-clicking the TODO.md size item jumps straight to the TODO editor page.
+                window._doctor_item_activated(window.doctor_list.item(0))
+                self.assertIs(window.stack.currentWidget(), window.doc_pages["TODO.md"])
+
+                # Saving new line limits in Settings persists to config.json, refreshes Doctor & clears Maintenance note.
+                window.state_limit_edit.setText("180")
+                window.todo_limit_edit.setText("220")
+                window._save_line_limits()
+                saved = load_config()
+                self.assertEqual(saved["max_state_lines"], 180)
+                self.assertEqual(saved["max_todo_lines"], 220)
+                self.assertIn("全部", window.doctor_summary.text())
+                self.assertNotIn("Maintenance:", window.resume_view.toPlainText())
+
+                # Once no completed items remain, the archive button stays hidden instead of looking like a dead button.
+                todo_path.write_text("# TODO\n\n## P0 — Current\n\n- [ ] Only pending\n", encoding="utf-8")
+                window._doctor()
+                self.assertTrue(window.doctor_archive_btn.isHidden())
+                self.assertTrue(window.todo_archive_btn.isHidden())
+
+                window.close()
+                app.processEvents()
+            finally:
+                if old_cfg_env is None:
+                    os.environ.pop("AGENT_CONTEXT_CONFIG_DIR", None)
+                else:
+                    os.environ["AGENT_CONTEXT_CONFIG_DIR"] = old_cfg_env
+
+    def test_checkpoint_page_lists_and_previews_archive_snapshots_newest_first(self) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from agent_context.gui import MainWindow
+        from agent_context.project import init_project
+
+        app = _qt_app()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "proj"
+            project.mkdir()
+            init_project(project)
+            archive_dir = project / ".agent" / "archive"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            (archive_dir / "checkpoint-2026-11-24-090000.md").write_text("# Checkpoint\n\nOLDER SNAPSHOT\n", encoding="utf-8")
+            (archive_dir / "checkpoint-2026-11-25-101500.md").write_text("# Checkpoint\n\nNEWER SNAPSHOT\n", encoding="utf-8")
+
+            window = MainWindow(project)
+            window._navigate_by_key("checkpoint")
+
+            self.assertEqual(window.archive_list.count(), 2)
+            self.assertEqual(window.archive_list.item(0).text(), "2026-11-25 10:15:00")
+            self.assertEqual(window.archive_list.item(1).text(), "2026-11-24 09:00:00")
+            self.assertIn("NEWER SNAPSHOT", window.archive_preview.toPlainText())
+            self.assertTrue(window.archive_copy_btn.isEnabled())
+
+            window.archive_list.setCurrentRow(1)
+            self.assertIn("OLDER SNAPSHOT", window.archive_preview.toPlainText())
+
+            window.close()
+            app.processEvents()
+
+
 if __name__ == "__main__":
     unittest.main()

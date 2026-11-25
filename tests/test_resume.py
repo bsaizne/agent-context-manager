@@ -118,6 +118,38 @@ class AgentPromptTemplateTests(unittest.TestCase):
             self.assertTrue(prompt.rstrip().endswith("END"))
             self.assertIn("AGENT CONTEXT RESUME", prompt)
 
+    def test_build_resume_adds_maintenance_note_only_when_over_limit(self) -> None:
+        from agent_context.resume import build_resume
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._make_project(Path(tmp))
+            config_dir = Path(tmp) / "config"
+            config_dir.mkdir()
+            (config_dir / "config.json").write_text(
+                json.dumps({"max_state_lines": 120, "max_todo_lines": 20}),
+                encoding="utf-8",
+            )
+            old = os.environ.get("AGENT_CONTEXT_CONFIG_DIR")
+            os.environ["AGENT_CONTEXT_CONFIG_DIR"] = str(config_dir)
+            try:
+                # Under limit: no Maintenance section emitted.
+                clean = build_resume(project)
+                self.assertNotIn("Maintenance:", clean)
+
+                # Over TODO limit: Maintenance note automatically piggybacks on resume.
+                todo_path = project / ".agent" / "TODO.md"
+                items = "\n".join(f"- [x] Task {i}" for i in range(25))
+                todo_path.write_text(f"# TODO\n\n## P0 — Current\n\n{items}\n", encoding="utf-8")
+                over = build_resume(project)
+                self.assertIn("Maintenance:", over)
+                self.assertIn(".agent/TODO.md", over)
+                self.assertIn("limit 20", over)
+            finally:
+                if old is None:
+                    os.environ.pop("AGENT_CONTEXT_CONFIG_DIR", None)
+                else:
+                    os.environ["AGENT_CONTEXT_CONFIG_DIR"] = old
+
 
 if __name__ == "__main__":
     unittest.main()

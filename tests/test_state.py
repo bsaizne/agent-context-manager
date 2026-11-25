@@ -169,6 +169,54 @@ class StateWorkflowTests(unittest.TestCase):
             self.assertEqual(error_check.severity, "error")
             self.assertIn("missing required", error_check.detail)
 
+    def test_archive_completed_todos_moves_checked_items_to_changelog_with_snapshots(self) -> None:
+        from agent_context.state import archive_completed_todos, count_completed_todos
+        from agent_context.versions import list_versions
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "proj"
+            project.mkdir()
+            init_project(project)
+            todo_path = project / ".agent" / "TODO.md"
+            changelog_path = project / ".agent" / "CHANGELOG.md"
+            write_utf8(
+                todo_path,
+                "# TODO\n\n"
+                "## P0 — Current\n\n"
+                "- [x] Fix combo flash\n"
+                "  - Replaced QRollEffect with fade\n"
+                "- [ ] Keep pending task\n\n"
+                "## P1 — Next\n\n"
+                "- [X] Polish overview cards\n"
+                "- [ ] Next feature\n",
+            )
+            self.assertEqual(count_completed_todos(todo_path.read_text(encoding="utf-8")), 2)
+
+            report = archive_completed_todos(project)
+            self.assertEqual(report.archived_count, 2)
+            self.assertLess(report.todo_lines_after, report.todo_lines_before)
+
+            new_todo = todo_path.read_text(encoding="utf-8")
+            self.assertNotIn("Fix combo flash", new_todo)
+            self.assertNotIn("Replaced QRollEffect", new_todo)
+            self.assertNotIn("Polish overview cards", new_todo)
+            self.assertIn("- [ ] Keep pending task", new_todo)
+            self.assertIn("- [ ] Next feature", new_todo)
+
+            new_changelog = changelog_path.read_text(encoding="utf-8")
+            self.assertIn("[P0] Fix combo flash", new_changelog)
+            self.assertIn("Replaced QRollEffect with fade", new_changelog)
+            self.assertIn("[P1] Polish overview cards", new_changelog)
+            self.assertNotIn("No changes recorded yet.", new_changelog)
+
+            # Both before and after snapshots are recorded for Changes diff view.
+            self.assertGreaterEqual(len(list_versions(project, "TODO.md")), 2)
+            self.assertGreaterEqual(len(list_versions(project, "CHANGELOG.md")), 2)
+
+            # Idempotent when no completed tasks remain.
+            second = archive_completed_todos(project)
+            self.assertEqual(second.archived_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

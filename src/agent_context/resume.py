@@ -4,8 +4,40 @@ from pathlib import Path
 
 from .config import load_config
 from .state import load_snapshot
-from .templates import DEFAULT_AGENT_PROMPT_TEMPLATE
+from .templates import DEFAULT_AGENT_PROMPT_TEMPLATE, DEFAULT_CONFIG
 from .utils import ContextError, compact_lines, first_nonempty_line
+
+
+def _size_maintenance_notes(state_text: str, todo_text: str) -> list[str]:
+    """Return lightweight maintenance notes only when STATE.md / TODO.md exceed limits.
+
+    Emitting this dynamically in build_resume() lets existing projects benefit
+    from line-limit upkeep without touching or overwriting their custom AGENTS.md.
+    """
+    try:
+        config = load_config()
+    except (ContextError, OSError):
+        config = dict(DEFAULT_CONFIG)
+    notes: list[str] = []
+    state_limit = config.get("max_state_lines")
+    if isinstance(state_limit, int) and state_limit > 0:
+        state_lines = len(state_text.splitlines())
+        if state_lines > state_limit:
+            notes.append(
+                f"- .agent/STATE.md is {state_lines} lines (limit {state_limit}): "
+                "when updating state, trim older completed items into .agent/CHANGELOG.md "
+                "and durable choices into .agent/DECISIONS.md."
+            )
+    todo_limit = config.get("max_todo_lines")
+    if isinstance(todo_limit, int) and todo_limit > 0:
+        todo_lines = len(todo_text.splitlines())
+        if todo_lines > todo_limit:
+            notes.append(
+                f"- .agent/TODO.md is {todo_lines} lines (limit {todo_limit}): "
+                "keep pending tasks only and archive completed (- [x]) items into "
+                ".agent/CHANGELOG.md with their original keywords."
+            )
+    return notes
 
 
 def build_resume(project_path: Path) -> str:
@@ -57,6 +89,9 @@ def build_resume(project_path: Path) -> str:
             "Do not reconstruct the entire conversation.",
         ]
     )
+    maintenance = _size_maintenance_notes(snapshot.state_text, snapshot.todo_text)
+    if maintenance:
+        lines.extend(["", "Maintenance:", *maintenance])
     return "\n".join(lines).strip() + "\n"
 
 

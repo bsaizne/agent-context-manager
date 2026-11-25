@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 import ctypes
 import re
+import shutil
+import stat
 import subprocess
 import time
 import os
@@ -26,19 +28,19 @@ from pathlib import Path
 # was referenced by no spec and has been deleted in 0.5; do not reconnect it.
 
 from PySide6.QtCore import (
-    QEasingCurve, QObject, QParallelAnimationGroup, QPoint, QPointF, QPropertyAnimation, QRectF,
-    QSettings, QSize, QThread, Qt, QTimer, Signal, Slot,
+    QEasingCurve, QFile, QObject, QParallelAnimationGroup, QPoint, QPointF, QPropertyAnimation,
+    QRectF, QSettings, QSize, QThread, Qt, QTimer, Signal, Slot,
 )
 from PySide6.QtGui import (
-    QAction, QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
-    QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextFormat,
+    QAction, QColor, QFont, QFontMetrics, QIcon, QIntValidator, QKeySequence, QPainter,
+    QPainterPath, QPen, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextFormat,
 )
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QFileDialog, QFrame, QGraphicsDropShadowEffect,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QListView, QMainWindow,
-    QMessageBox, QPlainTextEdit, QPushButton, QComboBox, QRadioButton, QScrollArea, QSizePolicy,
-    QStackedWidget, QStatusBar, QStyle, QStyledItemDelegate, QTextEdit, QToolButton, QVBoxLayout,
-    QWidget,
+    QApplication, QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame,
+    QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QListView, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QComboBox, QRadioButton,
+    QScrollArea, QSizePolicy, QStackedWidget, QStatusBar, QStyle, QStyledItemDelegate, QTextEdit,
+    QToolButton, QVBoxLayout, QWidget,
 )
 
 from .archive import list_archives, read_archive
@@ -48,9 +50,9 @@ from .doctor import run_doctor
 from .icons import icon
 from .project import context_file_paths, find_initialized_project_path, init_project, resolve_project_path
 from .resume import build_agent_prompt
-from .state import repair_project
+from .state import archive_completed_todos, count_completed_todos, repair_project
 from .status import ProjectStatus, get_status
-from .templates import DEFAULT_AGENT_PROMPT_TEMPLATE
+from .templates import DEFAULT_AGENT_PROMPT_TEMPLATE, DEFAULT_CONFIG
 from .transfer import context_token_stats, export_project, import_project
 from .utils import ContextError, read_utf8, write_utf8
 from .versions import (
@@ -183,6 +185,41 @@ def build_context_bootstrap_prompt(project_path: Path) -> str:
 6. 如果运行了测试或检查，记录实际结果；没有运行则明确写明未运行及原因。
 
 最后只汇报：更新了哪些文件、确认了哪些关键事实、哪些内容仍待确认、测试/检查结果和建议的下一步。"""
+
+
+_DOCTOR_LABELS: dict[str, str] = {
+    "Python version": "Python 版本",
+    "Project directory": "项目目录",
+    ".agent directory": ".agent 目录",
+    "AGENTS.md": "AGENTS.md 规则文件",
+    "Git availability": "Git 工具",
+    "Git repository": "Git 仓库",
+    "File encoding": "文件编码 (UTF-8)",
+    "Project isolation": "项目目录隔离",
+    "STATE.md sections": "STATE.md 章节结构",
+    "STATE.md size": "STATE.md 行数检查",
+    "TODO.md size": "TODO.md 行数检查",
+}
+
+_DOCTOR_TARGETS: dict[str, str] = {
+    "STATE.md": "state",
+    "STATE.md sections": "state",
+    "STATE.md size": "state",
+    "TODO.md": "tasks",
+    "TODO.md size": "tasks",
+    "INDEX.md": "index",
+    "DECISIONS.md": "decisions",
+    "CHANGELOG.md": "changelog",
+    "AGENTS.md": "__agents__",
+}
+
+_DOCTOR_SUGGESTIONS_ZH: dict[str, str] = {
+    "STATE.md sections": "可点击下方「修复 STATE.md 结构」自动补齐缺失章节（不会丢失已有内容）。",
+    "STATE.md size": "下次「复制给 Agent」会自动提醒 Agent 顺手精简，也可在 Settings 中调高行数上限。",
+    "TODO.md size": "若有已完成项可一键归档到 CHANGELOG.md；否则下次「复制给 Agent」会自动提醒 Agent 精简，或在 Settings 调高上限。",
+    "File encoding": "请将相关 Markdown 文件另存为 UTF-8 编码。",
+    ".agent directory": "请先在 Overview 页点击「初始化项目」。",
+}
 
 
 def relative_time(timestamp: float) -> str:
@@ -508,11 +545,216 @@ class _ThemedComboBox(QComboBox):
         return QPoint(x, y), opens_up
 
 
+def _norm_path_key(raw: str | Path) -> str:
+    text = str(raw).strip()
+    return os.path.normcase(os.path.normpath(text)) if text else ""
+
+
+def _protected_delete_reason(path: Path) -> str | None:
+    """Block deleting high-risk directories (drive roots, home, OS, or the app itself)."""
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError:
+        resolved = Path(os.path.abspath(str(path)))
+    if resolved == resolved.parent:
+        return "不能删除磁盘根目录。"
+    try:
+        home = Path.home().resolve()
+    except OSError:
+        home = None
+    if home is not None and (resolved == home or resolved in home.parents):
+        return "不能删除用户主目录或其上级目录。"
+    for env_var in ("WINDIR", "SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"):
+        val = os.environ.get(env_var)
+        if not val:
+            continue
+        try:
+            sys_dir = Path(val).resolve()
+        except OSError:
+            continue
+        if resolved == sys_dir or resolved in sys_dir.parents or sys_dir in resolved.parents:
+            return "不能删除系统目录。"
+    # Protect the running app's own install/source directory (and its parents).
+    app_dirs: list[Path] = []
+    try:
+        app_dirs.append(Path(__file__).resolve().parent)
+    except OSError:
+        pass
+    if getattr(sys, "frozen", False):
+        try:
+            app_dirs.append(Path(sys.executable).resolve().parent)
+        except OSError:
+            pass
+    for app_dir in app_dirs:
+        if resolved == app_dir or resolved in app_dir.parents or app_dir in resolved.parents:
+            return "不能删除当前程序所在目录。"
+    return None
+
+
+def _handle_remove_readonly(func, path: str, _exc_info) -> None:
+    # Git pack/index files on Windows are often marked read-only; clear the flag before retrying.
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def _delete_directory(path: Path, *, use_trash: bool = True) -> None:
+    reason = _protected_delete_reason(path)
+    if reason:
+        raise ContextError("拒绝删除受保护目录。", reason)
+    if not path.exists():
+        return
+    if use_trash:
+        ok = QFile.moveToTrash(str(path))
+        if not ok or path.exists():
+            raise ContextError(
+                "无法将项目文件夹移入系统回收站。",
+                "目录中的文件可能正被其他程序占用，或当前驱动器不支持回收站。",
+                "请先关闭占用该目录的编辑器/终端后重试，或取消勾选「移入系统回收站」进行永久删除。",
+            )
+        return
+    shutil.rmtree(path, onerror=_handle_remove_readonly)
+
+
+class DeleteProjectDialog(QDialog):
+    """Let the user choose between removing a project from the app or deleting its folder."""
+
+    def __init__(self, project_path: Path, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.project_path = project_path
+        self._expected_name = project_path.name or str(project_path)
+        self._protected_reason = _protected_delete_reason(project_path)
+        self._folder_exists = project_path.exists()
+
+        self.setWindowTitle("删除项目")
+        self.setModal(True)
+        self.setMinimumWidth(480)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 22, 24, 20)
+        root.setSpacing(12)
+
+        title = QLabel(f"删除「{self._expected_name}」")
+        title.setObjectName("cardTitle")
+        root.addWidget(title)
+
+        path_label = QLabel(str(project_path))
+        path_label.setObjectName("pageSubtitle")
+        path_label.setWordWrap(True)
+        path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        path_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        root.addWidget(path_label)
+
+        # Option 1: Remove from software only (safe default).
+        self.remove_only_radio = QRadioButton("仅从软件中移除显示")
+        self.remove_only_radio.setChecked(True)
+        root.addWidget(self.remove_only_radio)
+        remove_desc = QLabel("只从「最近项目」列表和当前界面移除，不会修改或删除磁盘上的任何文件。")
+        remove_desc.setObjectName("pageSubtitle")
+        remove_desc.setWordWrap(True)
+        remove_desc.setContentsMargins(24, 0, 0, 4)
+        root.addWidget(remove_desc)
+
+        # Option 2: Delete entire folder on disk.
+        self.delete_folder_radio = QRadioButton("同时删除整个项目文件夹")
+        root.addWidget(self.delete_folder_radio)
+        folder_desc_text = "删除磁盘上的整个目录及其全部内容（包含项目代码与 .agent 文件夹）。"
+        can_delete_folder = self._folder_exists and self._protected_reason is None
+        if not self._folder_exists:
+            folder_desc_text = "磁盘上已不存在该目录，仅支持从软件中移除记录。"
+        elif self._protected_reason:
+            folder_desc_text = f"出于安全保护，禁止删除此目录：{self._protected_reason}"
+        self.delete_folder_radio.setEnabled(can_delete_folder)
+        folder_desc = QLabel(folder_desc_text)
+        folder_desc.setObjectName("pageSubtitle")
+        folder_desc.setWordWrap(True)
+        folder_desc.setContentsMargins(24, 0, 0, 0)
+        root.addWidget(folder_desc)
+
+        # Expanded danger zone shown only when deleting the whole folder.
+        self.danger_box = QFrame()
+        self.danger_box.setObjectName("dangerBox")
+        danger_layout = QVBoxLayout(self.danger_box)
+        danger_layout.setContentsMargins(14, 12, 14, 12)
+        danger_layout.setSpacing(8)
+
+        self.trash_checkbox = QCheckBox("移入系统回收站（推荐，可恢复）")
+        self.trash_checkbox.setChecked(True)
+        danger_layout.addWidget(self.trash_checkbox)
+
+        self.danger_hint = QLabel()
+        self.danger_hint.setWordWrap(True)
+        self.danger_hint.setObjectName("dangerText")
+        danger_layout.addWidget(self.danger_hint)
+
+        confirm_prompt = QLabel(f"请输入文件夹名称「{self._expected_name}」以确认删除：")
+        confirm_prompt.setWordWrap(True)
+        danger_layout.addWidget(confirm_prompt)
+
+        self.confirm_edit = QLineEdit()
+        self.confirm_edit.setPlaceholderText(self._expected_name)
+        danger_layout.addWidget(self.confirm_edit)
+        self.danger_box.setVisible(False)
+        root.addWidget(self.danger_box)
+
+        # Dialog action buttons.
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self.cancel_btn)
+
+        self.confirm_btn = QPushButton("确认移除")
+        self.confirm_btn.setObjectName("primary")
+        self.confirm_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self.confirm_btn)
+        root.addLayout(btn_row)
+
+        self.remove_only_radio.toggled.connect(self._sync_ui)
+        self.delete_folder_radio.toggled.connect(self._sync_ui)
+        self.trash_checkbox.toggled.connect(self._sync_ui)
+        self.confirm_edit.textChanged.connect(self._sync_ui)
+        self._sync_ui()
+
+    @property
+    def delete_folder(self) -> bool:
+        return self.delete_folder_radio.isChecked() and self.delete_folder_radio.isEnabled()
+
+    @property
+    def use_trash(self) -> bool:
+        return self.trash_checkbox.isChecked()
+
+    def _sync_ui(self) -> None:
+        deleting = self.delete_folder
+        self.danger_box.setVisible(deleting)
+        if deleting:
+            if self.use_trash:
+                self.danger_hint.setText("整个项目文件夹将被移入系统回收站，如有需要可从回收站还原。")
+                self.confirm_btn.setText("移入回收站并删除")
+            else:
+                self.danger_hint.setText("警告：整个项目文件夹将被永久删除，无法从回收站恢复！")
+                self.confirm_btn.setText("永久删除文件夹")
+            self.confirm_btn.setObjectName("danger")
+            self.confirm_btn.setEnabled(self.confirm_edit.text().strip() == self._expected_name)
+        else:
+            self.confirm_btn.setText("确认移除")
+            self.confirm_btn.setObjectName("primary")
+            self.confirm_btn.setEnabled(True)
+        # Re-polish button so switching objectName between "primary" and "danger" refreshes QSS.
+        self.confirm_btn.style().unpolish(self.confirm_btn)
+        self.confirm_btn.style().polish(self.confirm_btn)
+        if self.layout() is not None:
+            self.layout().activate()
+        self.adjustSize()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, initial_path: str | Path | None = None) -> None:
         super().__init__(); self.settings = QSettings(QSettings.IniFormat, QSettings.UserScope, "Agent Context Manager", "Agent Context Manager")
         saved_path = self.settings.value("project_path", "", type=str).strip()
-        self.project_path = resolve_project_path(initial_path or saved_path or None)
+        recent_paths = [str(p).strip() for p in (self.settings.value("recent_projects", [], type=list) or []) if str(p).strip()]
+        startup_raw = initial_path if initial_path is not None else (saved_path or (recent_paths[0] if recent_paths else ""))
+        self._has_project = bool(str(startup_raw).strip())
+        self.project_path = resolve_project_path(startup_raw) if self._has_project else Path.cwd()
         self.editors: dict[str, QPlainTextEdit] = {}; self.file_paths: dict[str, Path] = {}
         self.current_status: ProjectStatus | None = None; self.nav_buttons: list[QToolButton] = []
         self.checkpoint_thread: QThread | None = None; self.checkpoint_worker: CheckpointWorker | None = None
@@ -537,7 +779,11 @@ class MainWindow(QMainWindow):
         self._watch_timer.timeout.connect(self._watch_check)
         self.theme_mode = "system"
         self.setWindowTitle("Agent Context Manager"); self.setWindowIcon(app_icon()); self.resize(1200, 800); self.setMinimumSize(1000, 700)
-        self._build_ui(); self._apply_theme(); self._set_project_path(self.project_path, persist=False)
+        self._build_ui(); self._apply_theme()
+        if self._has_project:
+            self._set_project_path(self.project_path, persist=False)
+        else:
+            self._clear_current_project()
 
     def _build_ui(self) -> None:
         self._build_menu()
@@ -564,7 +810,8 @@ class MainWindow(QMainWindow):
         self.path_edit = QLineEdit(); self.path_edit.setPlaceholderText("项目目录（输入路径后按回车切换）"); self.path_edit.returnPressed.connect(self._open_project); top_layout.addWidget(self.path_edit, 1)
         self.switch_btn = QPushButton("切换"); self.switch_btn.setObjectName("primary"); self.switch_btn.setIcon(icon("arrow", "#FFFFFF")); self.switch_btn.setToolTip("加载输入框中的项目目录（也可直接按回车）"); self.switch_btn.clicked.connect(self._open_project); self.switch_btn.setVisible(False); top_layout.addWidget(self.switch_btn)
         self.path_edit.textChanged.connect(self._sync_path_switch_button)
-        self.browse_btn = QPushButton("选择目录"); self.browse_btn.setIcon(icon("folder")); self.browse_btn.setToolTip("选择项目目录并直接加载"); self.browse_btn.clicked.connect(self._browse_project); top_layout.addWidget(self.browse_btn); self._themed_icons.append((self.browse_btn, "folder")); content_layout.addWidget(top)
+        self.browse_btn = QPushButton("选择目录"); self.browse_btn.setIcon(icon("folder")); self.browse_btn.setToolTip("选择项目目录并直接加载"); self.browse_btn.clicked.connect(self._browse_project); top_layout.addWidget(self.browse_btn); self._themed_icons.append((self.browse_btn, "folder"))
+        self.delete_btn = QPushButton("删除项目"); self.delete_btn.setIcon(icon("trash")); self.delete_btn.setToolTip("从软件中移除当前项目，或同时删除整个项目文件夹"); self.delete_btn.clicked.connect(self._delete_project); top_layout.addWidget(self.delete_btn); self._themed_icons.append((self.delete_btn, "trash")); content_layout.addWidget(top)
         self.stack = QStackedWidget(); content_layout.addWidget(self.stack, 1); outer.addWidget(content, 1); self.setCentralWidget(shell)
         self.setStatusBar(QStatusBar()); self.statusBar().showMessage("请选择项目目录")
         self._refresh_recent_projects()
@@ -624,7 +871,16 @@ class MainWindow(QMainWindow):
             page = Page(filename, "编辑项目上下文，保存后立即用于 checkpoint 和 resume")
             editor = QPlainTextEdit(); editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap); editor.setFont(QFont("Cascadia Mono", 10)); editor.setEnabled(False); MarkdownHighlighter(editor.document()); editor.document().modificationChanged.connect(self._update_dirty_label); editor.textChanged.connect(self._schedule_editor_marks)
             self.editors[filename] = editor; self.file_paths[filename] = Path(); self.doc_pages[filename] = page
-            actions = QHBoxLayout(); dirty = QLabel(""); dirty.setObjectName("muted"); setattr(editor, "dirty_label", dirty); actions.addWidget(dirty); actions.addStretch(); open_ext = QPushButton("外部打开"); open_ext.setIcon(icon("folder")); open_ext.setToolTip("用系统默认程序打开该文件（可用 default_editor 配置指定编辑器）"); open_ext.clicked.connect(lambda _=False, name=filename: self._open_in_editor(name)); actions.addWidget(open_ext); save = QPushButton("保存"); save.setIcon(icon("save")); save.clicked.connect(self._save_current); actions.addWidget(save); page.layout.addWidget(editor, 1); page.layout.addLayout(actions); self.stack.addWidget(page)
+            actions = QHBoxLayout(); dirty = QLabel(""); dirty.setObjectName("muted"); setattr(editor, "dirty_label", dirty); actions.addWidget(dirty); actions.addStretch()
+            if filename == "TODO.md":
+                self.todo_archive_btn = QPushButton("归档已完成待办")
+                self.todo_archive_btn.setIcon(icon("check"))
+                self.todo_archive_btn.setToolTip("将已勾选的 - [x] 条目移入 CHANGELOG.md（自动记录版本快照，不丢历史）")
+                self.todo_archive_btn.clicked.connect(self._archive_completed_todos)
+                self.todo_archive_btn.setVisible(False)
+                actions.addWidget(self.todo_archive_btn)
+                self._themed_icons.append((self.todo_archive_btn, "check"))
+            open_ext = QPushButton("外部打开"); open_ext.setIcon(icon("folder")); open_ext.setToolTip("用系统默认程序打开该文件（可用 default_editor 配置指定编辑器）"); open_ext.clicked.connect(lambda _=False, name=filename: self._open_in_editor(name)); actions.addWidget(open_ext); save = QPushButton("保存"); save.setIcon(icon("save")); save.clicked.connect(self._save_current); actions.addWidget(save); page.layout.addWidget(editor, 1); page.layout.addLayout(actions); self.stack.addWidget(page)
         self._make_changes_page(); self._make_checkpoint_page(); self._make_resume_page(); self._make_doctor_page(); self._make_settings_page()
 
     def _make_changes_page(self) -> None:
@@ -680,6 +936,12 @@ class MainWindow(QMainWindow):
     def _refresh_changes(self) -> None:
         """Reload the version list for the selected file and redraw the diff."""
         if not hasattr(self, "changes_view"):
+            return
+        if not self._has_project:
+            self._changes_refs = []
+            self.changes_from_combo.clear(); self.changes_to_combo.clear()
+            self.changes_view.clear(); self.changes_view.setExtraSelections([])
+            self.changes_summary.setText("请先选择一个项目目录")
             return
         filename = self.changes_file_combo.currentText()
         try:
@@ -798,8 +1060,42 @@ class MainWindow(QMainWindow):
         self._apply_editor_marks()
 
     def _make_checkpoint_page(self) -> None:
-        self.checkpoint_page = Page("Checkpoint", "保存一个可追溯的项目状态快照")
-        card = self._card(); lay = QVBoxLayout(card); lay.setContentsMargins(28, 28, 28, 28); lay.setSpacing(12); h = QLabel("Save Project State"); h.setObjectName("cardTitle"); lay.addWidget(h); lay.addWidget(QLabel("创建检查点会保存当前状态、待办和 Git 信息，方便之后继续工作。")); self.checkpoint_result = QLabel("尚未创建检查点"); self.checkpoint_result.setObjectName("muted"); lay.addWidget(self.checkpoint_result); lay.addSpacing(8); b = QPushButton("创建 Checkpoint"); b.setObjectName("primary"); b.setMinimumWidth(154); b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed); b.setIcon(icon("checkpoint", "#FFFFFF")); b.clicked.connect(self._checkpoint); self.checkpoint_buttons.append(b); lay.addWidget(b, alignment=Qt.AlignLeft); self.checkpoint_page.layout.addWidget(card); self.checkpoint_page.layout.addStretch(); self.stack.addWidget(self.checkpoint_page)
+        self.checkpoint_page = Page("Checkpoint", "创建检查点并回看 .agent/archive/ 中的历史项目快照")
+        bar = self._card()
+        bar_lay = QHBoxLayout(bar); bar_lay.setContentsMargins(20, 14, 20, 14); bar_lay.setSpacing(12)
+        info_col = QVBoxLayout(); info_col.setSpacing(2)
+        h = QLabel("历史检查点快照"); h.setObjectName("cardTitle"); info_col.addWidget(h)
+        self.checkpoint_result = QLabel("尚未创建检查点"); self.checkpoint_result.setObjectName("muted"); info_col.addWidget(self.checkpoint_result)
+        bar_lay.addLayout(info_col, 1)
+        open_dir = QPushButton("打开归档目录"); open_dir.setIcon(icon("folder")); open_dir.setToolTip("在系统文件管理器中打开 .agent/archive/"); open_dir.clicked.connect(self._open_archive_dir); bar_lay.addWidget(open_dir); self._themed_icons.append((open_dir, "folder"))
+        b = QPushButton("创建 Checkpoint"); b.setObjectName("primary"); b.setMinimumWidth(154); b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed); b.setIcon(icon("checkpoint", "#FFFFFF")); b.clicked.connect(self._checkpoint); self.checkpoint_buttons.append(b); bar_lay.addWidget(b)
+        self.checkpoint_page.layout.addWidget(bar)
+
+        split = QHBoxLayout(); split.setSpacing(16)
+        self.archive_list = QListWidget()
+        self.archive_list.setFixedWidth(240)
+        self.archive_list.currentRowChanged.connect(self._archive_selected)
+        split.addWidget(self.archive_list)
+
+        preview_col = QVBoxLayout(); preview_col.setSpacing(8)
+        self.archive_preview = QPlainTextEdit()
+        self.archive_preview.setReadOnly(True)
+        self.archive_preview.setFont(QFont("Cascadia Mono", 10))
+        self.archive_preview.setPlaceholderText("尚无历史检查点快照。点击右上角「创建 Checkpoint」或在 Overview 点击「保存进度」后会显示在这里。")
+        MarkdownHighlighter(self.archive_preview.document())
+        preview_col.addWidget(self.archive_preview, 1)
+
+        preview_actions = QHBoxLayout()
+        self.archive_preview_title = QLabel("")
+        self.archive_preview_title.setObjectName("muted")
+        preview_actions.addWidget(self.archive_preview_title, 1)
+        self.archive_copy_btn = QPushButton("复制快照"); self.archive_copy_btn.setIcon(icon("copy")); self.archive_copy_btn.clicked.connect(self._copy_archive_preview); self.archive_copy_btn.setEnabled(False); preview_actions.addWidget(self.archive_copy_btn); self._themed_icons.append((self.archive_copy_btn, "copy"))
+        self.archive_open_btn = QPushButton("外部打开"); self.archive_open_btn.setIcon(icon("folder")); self.archive_open_btn.clicked.connect(self._open_selected_archive); self.archive_open_btn.setEnabled(False); preview_actions.addWidget(self.archive_open_btn); self._themed_icons.append((self.archive_open_btn, "folder"))
+        preview_col.addLayout(preview_actions)
+        split.addLayout(preview_col, 1)
+
+        self.checkpoint_page.layout.addLayout(split, 1)
+        self.stack.addWidget(self.checkpoint_page)
 
     def _make_resume_page(self) -> None:
         self.resume_page = Page("Resume", "快速恢复项目，让下一次对话从正确上下文开始")
@@ -807,20 +1103,80 @@ class MainWindow(QMainWindow):
         actions = QHBoxLayout(); actions.addStretch(); copy = QPushButton("复制给 Agent"); copy.setObjectName("primary"); copy.setIcon(icon("copy", "#FFFFFF")); copy.clicked.connect(self._copy_resume); actions.addWidget(copy); refresh = QPushButton("重新生成"); refresh.setIcon(icon("refresh")); refresh.clicked.connect(self._resume); actions.addWidget(refresh); self.resume_page.layout.addLayout(actions); self.stack.addWidget(self.resume_page)
 
     def _make_doctor_page(self) -> None:
-        self.doctor_page = Page("Doctor", "检查项目结构、编码和 Git 环境")
-        self.doctor_list = QListWidget(); self.doctor_page.layout.addWidget(self.doctor_list, 1)
+        self.doctor_page = Page("Doctor", "检查项目结构、编码、文档体量和 Git 环境；双击文件项可直接跳转编辑")
+        self.doctor_summary = QLabel("尚未运行健康检查")
+        self.doctor_summary.setObjectName("pageSubtitle")
+        self.doctor_page.layout.addWidget(self.doctor_summary)
+        self.doctor_list = QListWidget()
+        self.doctor_list.setWordWrap(True)
+        self.doctor_list.itemDoubleClicked.connect(self._doctor_item_activated)
+        self.doctor_page.layout.addWidget(self.doctor_list, 1)
         row = QHBoxLayout()
-        run = QPushButton("运行健康检查"); run.setIcon(icon("doctor")); run.clicked.connect(self._doctor); row.addWidget(run)
-        repair = QPushButton("修复 STATE.md 结构"); repair.setIcon(icon("check")); repair.setToolTip("补齐缺失章节并按协议重排；同名章节会合并，不会丢失内容"); repair.clicked.connect(self._repair_context); row.addWidget(repair)
+        run = QPushButton("运行健康检查"); run.setIcon(icon("doctor")); run.clicked.connect(self._doctor); row.addWidget(run); self._themed_icons.append((run, "doctor"))
+        repair = QPushButton("修复 STATE.md 结构"); repair.setIcon(icon("check")); repair.setToolTip("补齐缺失章节并按协议重排；同名章节会合并，不会丢失内容"); repair.clicked.connect(self._repair_context); row.addWidget(repair); self._themed_icons.append((repair, "check"))
+        self.doctor_archive_btn = QPushButton("归档已完成待办"); self.doctor_archive_btn.setIcon(icon("changelog")); self.doctor_archive_btn.setToolTip("将 TODO.md 中已勾选的 - [x] 移入 CHANGELOG.md（归档前自动记版本快照，保留原关键词便于 Agent 查重）"); self.doctor_archive_btn.clicked.connect(self._archive_completed_todos); self.doctor_archive_btn.setVisible(False); row.addWidget(self.doctor_archive_btn); self._themed_icons.append((self.doctor_archive_btn, "changelog"))
         row.addStretch()
         self.doctor_page.layout.addLayout(row); self.stack.addWidget(self.doctor_page)
 
     def _make_settings_page(self) -> None:
         self.settings_page = Page("Settings", "保持简洁，只保留影响工作流的设置")
-        card = self._card(); lay = QVBoxLayout(card); lay.setContentsMargins(24, 24, 24, 24); lay.setSpacing(14); title = QLabel("Appearance"); title.setObjectName("cardTitle"); lay.addWidget(title); self.theme_group = QButtonGroup(self)
+        settings_body = QWidget()
+        settings_body.setObjectName("cardInner")
+        settings_lay = QVBoxLayout(settings_body)
+        settings_lay.setContentsMargins(0, 0, 8, 0)
+        settings_lay.setSpacing(16)
+        settings_scroll = QScrollArea()
+        settings_scroll.setObjectName("overviewScroll")
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QFrame.NoFrame)
+        settings_scroll.setWidget(settings_body)
+        self.settings_page.layout.addWidget(settings_scroll, 1)
+
+        card = self._card(); lay = QVBoxLayout(card); lay.setContentsMargins(20, 16, 20, 16); lay.setSpacing(8); title = QLabel("外观主题"); title.setObjectName("cardTitle"); lay.addWidget(title); self.theme_group = QButtonGroup(self)
+        trow = QHBoxLayout()
         for mode, text in [("system", "跟随系统"), ("light", "浅色"), ("dark", "深色")]:
-            radio = QRadioButton(text); radio.setProperty("themeMode", mode); self.theme_group.addButton(radio); radio.toggled.connect(self._theme_changed); lay.addWidget(radio); 
+            radio = QRadioButton(text); radio.setProperty("themeMode", mode); self.theme_group.addButton(radio); radio.toggled.connect(self._theme_changed); trow.addWidget(radio)
             if mode == "system": radio.setChecked(True)
+        trow.addStretch()
+        lay.addLayout(trow)
+        settings_lay.addWidget(card)
+
+        limits_card = self._card()
+        ll = QVBoxLayout(limits_card); ll.setContentsMargins(20, 16, 20, 16); ll.setSpacing(10)
+        lt = QLabel("文档行数上限"); lt.setObjectName("cardTitle"); ll.addWidget(lt)
+        ldesc = QLabel("控制 Doctor 健康检查对 STATE.md 和 TODO.md 的行数告警阈值，防止上下文文件过长占用过多 Agent token。")
+        ldesc.setObjectName("pageSubtitle"); ldesc.setWordWrap(True); ll.addWidget(ldesc)
+        try:
+            cfg = load_config()
+        except (ContextError, OSError):
+            cfg = dict(DEFAULT_CONFIG)
+        lrow = QHBoxLayout(); lrow.setSpacing(8)
+        lrow.addWidget(QLabel("STATE.md 上限"))
+        self.state_limit_edit = QLineEdit(str(int(cfg.get("max_state_lines") or DEFAULT_CONFIG["max_state_lines"])))
+        self.state_limit_edit.setValidator(QIntValidator(20, 2000, self))
+        self.state_limit_edit.setAlignment(Qt.AlignCenter)
+        self.state_limit_edit.setFixedWidth(84)
+        self.state_limit_edit.returnPressed.connect(self._save_line_limits)
+        lrow.addWidget(self.state_limit_edit)
+        lrow.addWidget(QLabel("行"))
+        lrow.addSpacing(16)
+        lrow.addWidget(QLabel("TODO.md 上限"))
+        self.todo_limit_edit = QLineEdit(str(int(cfg.get("max_todo_lines") or DEFAULT_CONFIG["max_todo_lines"])))
+        self.todo_limit_edit.setValidator(QIntValidator(20, 2000, self))
+        self.todo_limit_edit.setAlignment(Qt.AlignCenter)
+        self.todo_limit_edit.setFixedWidth(84)
+        self.todo_limit_edit.returnPressed.connect(self._save_line_limits)
+        lrow.addWidget(self.todo_limit_edit)
+        lrow.addWidget(QLabel("行"))
+        lrow.addStretch()
+        ll.addLayout(lrow)
+        lbtn_row = QHBoxLayout()
+        save_l = QPushButton("保存上限"); save_l.setIcon(icon("save")); save_l.clicked.connect(self._save_line_limits); lbtn_row.addWidget(save_l); self._themed_icons.append((save_l, "save"))
+        reset_l = QPushButton("恢复默认"); reset_l.setIcon(icon("refresh")); reset_l.setToolTip("恢复出厂默认行数上限（STATE 120 行 / TODO 100 行）"); reset_l.clicked.connect(self._reset_line_limits); lbtn_row.addWidget(reset_l); self._themed_icons.append((reset_l, "refresh"))
+        lbtn_row.addStretch()
+        ll.addLayout(lbtn_row)
+        settings_lay.addWidget(limits_card)
+
         export_card = self._card()
         el = QVBoxLayout(export_card)
         el.setContentsMargins(20, 16, 20, 16)
@@ -841,9 +1197,16 @@ class MainWindow(QMainWindow):
         ib.setIcon(icon("folder"))
         ib.clicked.connect(self._import_project)
         erow.addWidget(ib)
+        db = QPushButton("删除项目")
+        db.setIcon(icon("trash"))
+        db.setToolTip("从软件中移除当前项目，或同时删除整个项目文件夹")
+        db.clicked.connect(self._delete_project)
+        erow.addWidget(db)
+        self._themed_icons.append((db, "trash"))
         erow.addStretch()
         el.addLayout(erow)
-        self.settings_page.layout.addWidget(export_card)
+        settings_lay.addWidget(export_card)
+
         prompt_card = self._card()
         pl = QVBoxLayout(prompt_card); pl.setContentsMargins(20, 16, 20, 16); pl.setSpacing(8)
         pt = QLabel("交接提示词"); pt.setObjectName("cardTitle"); pl.addWidget(pt)
@@ -851,10 +1214,7 @@ class MainWindow(QMainWindow):
         pdesc.setObjectName("pageSubtitle"); pdesc.setWordWrap(True); pl.addWidget(pdesc)
         self.prompt_template_edit = QPlainTextEdit()
         self.prompt_template_edit.setMinimumHeight(120)
-        try:
-            stored = load_config().get("agent_prompt_template")
-        except (ContextError, OSError):
-            stored = None
+        stored = cfg.get("agent_prompt_template")
         self.prompt_template_edit.setPlainText(stored or DEFAULT_AGENT_PROMPT_TEMPLATE)
         pl.addWidget(self.prompt_template_edit)
         prow = QHBoxLayout()
@@ -862,8 +1222,35 @@ class MainWindow(QMainWindow):
         reset_p = QPushButton("恢复默认"); reset_p.setIcon(icon("refresh")); reset_p.setToolTip("恢复出厂默认模板并保存"); reset_p.clicked.connect(self._reset_prompt_template); prow.addWidget(reset_p)
         prow.addStretch()
         pl.addLayout(prow)
-        self.settings_page.layout.addWidget(prompt_card)
-        self.settings_page.layout.addStretch(); self.stack.addWidget(self.settings_page)
+        settings_lay.addWidget(prompt_card)
+        settings_lay.addStretch(); self.stack.addWidget(self.settings_page)
+
+    def _save_line_limits(self) -> None:
+        try:
+            state_val = int(self.state_limit_edit.text().strip())
+            todo_val = int(self.todo_limit_edit.text().strip())
+        except ValueError:
+            self._show_error(ContextError("行数上限必须是整数。", "请输入 20 到 2000 之间的数字。"))
+            return
+        state_val = max(20, min(2000, state_val))
+        todo_val = max(20, min(2000, todo_val))
+        self.state_limit_edit.setText(str(state_val))
+        self.todo_limit_edit.setText(str(todo_val))
+        try:
+            config = load_config()
+            config["max_state_lines"] = state_val
+            config["max_todo_lines"] = todo_val
+            save_config(config)
+        except (ContextError, OSError) as exc:
+            self._show_error(exc); return
+        self._doctor()
+        self._resume()
+        self._toast(f"文档行数上限已保存（STATE {state_val} 行 / TODO {todo_val} 行）")
+
+    def _reset_line_limits(self) -> None:
+        self.state_limit_edit.setText(str(int(DEFAULT_CONFIG["max_state_lines"])))
+        self.todo_limit_edit.setText(str(int(DEFAULT_CONFIG["max_todo_lines"])))
+        self._save_line_limits()
 
     def _save_prompt_template(self) -> None:
         try:
@@ -976,9 +1363,13 @@ class MainWindow(QMainWindow):
         self._refresh_icons()
         if key == "changes":
             self._refresh_changes()
+        elif key == "doctor":
+            self._doctor()
+        elif key == "checkpoint":
+            self._refresh_archives()
 
     def _build_menu(self) -> None:
-        menu = self.menuBar().addMenu("文件"); a = QAction("打开项目", self); a.setShortcut(QKeySequence("Ctrl+O")); a.triggered.connect(self._browse_project); menu.addAction(a); a = QAction("保存当前文件", self); a.setShortcut(QKeySequence("Ctrl+S")); a.triggered.connect(self._save_current); menu.addAction(a); a = QAction("复制填充提示词", self); a.setShortcut(QKeySequence("Ctrl+Shift+I")); a.triggered.connect(self._copy_bootstrap_prompt); menu.addAction(a); a = QAction("复制恢复指令", self); a.setShortcut(QKeySequence("Ctrl+Shift+R")); a.triggered.connect(self._copy_resume); menu.addAction(a); menu.addSeparator(); a = QAction("退出", self); a.triggered.connect(self.close); menu.addAction(a)
+        menu = self.menuBar().addMenu("文件"); a = QAction("打开项目", self); a.setShortcut(QKeySequence("Ctrl+O")); a.triggered.connect(self._browse_project); menu.addAction(a); a = QAction("删除项目...", self); a.triggered.connect(self._delete_project); menu.addAction(a); a = QAction("保存当前文件", self); a.setShortcut(QKeySequence("Ctrl+S")); a.triggered.connect(self._save_current); menu.addAction(a); a = QAction("复制填充提示词", self); a.setShortcut(QKeySequence("Ctrl+Shift+I")); a.triggered.connect(self._copy_bootstrap_prompt); menu.addAction(a); a = QAction("复制恢复指令", self); a.setShortcut(QKeySequence("Ctrl+Shift+R")); a.triggered.connect(self._copy_resume); menu.addAction(a); menu.addSeparator(); a = QAction("退出", self); a.triggered.connect(self.close); menu.addAction(a)
 
     # The base font is set in pt, not px. A px size made Qt call setPointSize(-1) while
     # parsing the stylesheet and printed "QFont::setPointSize: Point size <= 0" on every
@@ -986,7 +1377,7 @@ class MainWindow(QMainWindow):
     # unchanged).
     def _apply_theme(self) -> None:
         dark = self.theme_mode == "dark" or (self.theme_mode == "system" and self.palette().window().color().lightness() < 128)
-        c = {"bg": "#1C1C1E" if dark else "#F5F5F7", "side": "#2C2C2E" if dark else "#F2F2F7", "card": "#2C2C2E" if dark else "#FFFFFF", "text": "#F5F5F7" if dark else "#1D1D1F", "muted": "#98989D" if dark else "#6E6E73", "line": "#48484A" if dark else "#D2D2D7", "accent": "#5B9EF4" if dark else "#2775D3", "scroll": "rgba(255,255,255,0.24)" if dark else "rgba(0,0,0,0.22)", "scroll_hover": "rgba(255,255,255,0.38)" if dark else "rgba(0,0,0,0.35)", "accent_soft": "rgba(91,158,244,0.20)" if dark else "rgba(39,117,211,0.10)", "diff_add": "#1E3A2B" if dark else "#E6F4EA", "diff_del": "#4A1F1F" if dark else "#FCE8E6"}
+        c = {"bg": "#1C1C1E" if dark else "#F5F5F7", "side": "#2C2C2E" if dark else "#F2F2F7", "card": "#2C2C2E" if dark else "#FFFFFF", "text": "#F5F5F7" if dark else "#1D1D1F", "muted": "#98989D" if dark else "#6E6E73", "line": "#48484A" if dark else "#D2D2D7", "accent": "#5B9EF4" if dark else "#2775D3", "scroll": "rgba(255,255,255,0.24)" if dark else "rgba(0,0,0,0.22)", "scroll_hover": "rgba(255,255,255,0.38)" if dark else "rgba(0,0,0,0.35)", "accent_soft": "rgba(91,158,244,0.20)" if dark else "rgba(39,117,211,0.10)", "diff_add": "#1E3A2B" if dark else "#E6F4EA", "diff_del": "#4A1F1F" if dark else "#FCE8E6", "danger": "#E5534B" if dark else "#D93025", "danger_soft": "rgba(229,83,75,0.16)" if dark else "rgba(217,48,37,0.08)", "danger_line": "rgba(229,83,75,0.45)" if dark else "rgba(217,48,37,0.35)", "danger_disabled": "rgba(229,83,75,0.38)" if dark else "rgba(217,48,37,0.38)"}
         self.setStyleSheet(f"""
         QMainWindow, QWidget {{ background:{c['bg']}; color:{c['text']}; font-family:'Segoe UI'; font-size:10pt; }}
         QLabel {{ background:transparent; }}
@@ -1008,15 +1399,21 @@ class MainWindow(QMainWindow):
         QToolButton#bannerClose:hover {{ color:{c['text']}; }}
         QScrollArea#overviewScroll {{ background:transparent; border:0; }}
         QFrame#card QScrollArea, QFrame#card QWidget#cardInner, QFrame#card QRadioButton, QFrame#card QCheckBox {{ background:transparent; border:0; }}
-        QFrame#card {{ background:{c['card']}; border:1px solid {c['line']}; border-radius:12px; }} QLineEdit, QPlainTextEdit, QListWidget {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:8px; }}
+        QFrame#card {{ background:{c['card']}; border:1px solid {c['line']}; border-radius:12px; }} QLineEdit, QPlainTextEdit {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:8px; }}
+        QListWidget {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:6px; outline:0; selection-background-color:{c['accent_soft']}; selection-color:{c['accent']}; }}
         QComboBox {{ combobox-popup:0; background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:7px 32px 7px 12px; min-height:20px; }}
         QComboBox:hover, QComboBox:on {{ border-color:{c['accent']}; }}
         QComboBox::drop-down {{ subcontrol-origin:padding; subcontrol-position:top right; border:0; width:30px; background:transparent; }}
         QComboBox::down-arrow {{ image:none; border:0; width:0; height:0; }}
         QFrame#comboPopupContainer {{ background:transparent; border:none; }}
         QComboBox QAbstractItemView, QListView#comboPopupList {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:10px; padding:{_COMBO_LIST_PAD}px; outline:0; }}
-        QPushButton {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:8px 14px; min-height:18px; }} QPushButton:hover {{ border-color:{c['accent']}; }} QPushButton#primary {{ background:{c['accent']}; color:white; border:0; }} QPushButton#primary:disabled {{ background:{c['accent']}; color:white; }}
-        QRadioButton {{ spacing:8px; padding:4px; }} QListWidget::item {{ padding:10px; border-bottom:1px solid {c['line']}; }}
+        QPushButton {{ background:{c['card']}; color:{c['text']}; border:1px solid {c['line']}; border-radius:8px; padding:8px 14px; min-height:18px; }} QPushButton:hover {{ border-color:{c['accent']}; }} QPushButton:disabled {{ background:{c['side']}; color:{c['muted']}; border-color:{c['line']}; }} QPushButton#primary {{ background:{c['accent']}; color:white; border:0; }} QPushButton#primary:disabled {{ background:{c['accent']}; color:rgba(255,255,255,0.65); }}
+        QPushButton#danger {{ background:{c['danger']}; color:white; border:0; }} QPushButton#danger:hover {{ background:{c['danger']}; }} QPushButton#danger:disabled {{ background:{c['danger_disabled']}; color:rgba(255,255,255,0.75); border:0; }}
+        QFrame#dangerBox {{ background:{c['danger_soft']}; border:1px solid {c['danger_line']}; border-radius:10px; }} QFrame#dangerBox QCheckBox {{ background:transparent; }} QLabel#dangerText {{ color:{c['danger']}; font-weight:600; }}
+        QRadioButton {{ spacing:8px; padding:4px; }}
+        QListWidget::item {{ padding:10px 12px; border-radius:6px; border-bottom:1px solid {c['line']}; color:{c['text']}; }}
+        QListWidget::item:hover {{ background:{c['side']}; color:{c['text']}; }}
+        QListWidget::item:selected, QListWidget::item:selected:active, QListWidget::item:selected:!active {{ background:{c['accent_soft']}; color:{c['accent']}; border-bottom:1px solid transparent; }}
         QScrollBar:vertical {{ background:transparent; width:9px; margin:2px; border-radius:4px; }}
         QScrollBar::handle:vertical {{ background:{c['scroll']}; min-height:32px; border-radius:3px; }}
         QScrollBar::handle:vertical:hover {{ background:{c['scroll_hover']}; }}
@@ -1065,20 +1462,27 @@ class MainWindow(QMainWindow):
             view.setGraphicsEffect(shadow)
             combo.update()
 
+    def _require_project(self) -> bool:
+        if self._has_project:
+            return True
+        self._toast("请先选择一个项目目录")
+        return False
+
     def _sync_path_switch_button(self) -> None:
         raw = self.path_edit.text().strip()
         if not raw:
             self.switch_btn.setVisible(False)
             return
+        if not self._has_project:
+            self.switch_btn.setVisible(True)
+            return
         current = str(self.project_path).strip()
-        changed = (
-            os.path.normcase(os.path.normpath(raw)) != os.path.normcase(os.path.normpath(current))
-            if current else True
-        )
+        changed = _norm_path_key(raw) != _norm_path_key(current) if current else True
         self.switch_btn.setVisible(changed)
 
     def _browse_project(self) -> None:
-        selected = QFileDialog.getExistingDirectory(self, "选择项目目录", str(self.project_path))
+        start_dir = str(self.project_path) if self._has_project and self.project_path.exists() else str(Path.home())
+        selected = QFileDialog.getExistingDirectory(self, "选择项目目录", start_dir)
         if selected: self.path_edit.setText(selected); self._open_project()
 
     def _open_project(self) -> None:
@@ -1091,12 +1495,16 @@ class MainWindow(QMainWindow):
         discovered_path = find_initialized_project_path(path)
         if discovered_path is not None:
             path = discovered_path
+        self._has_project = True
         self.project_path = path
+        self.delete_btn.setEnabled(True)
         self._watch_timer.stop()
         self._pending_external_changes = []
         self._project_load_message = ""
         if persist:
             self.settings.setValue("project_path", str(path)); self._remember_project(path); self.settings.sync()
+        else:
+            self._refresh_recent_projects()
         self.path_edit.setText(str(path)); self._sync_path_switch_button(); self.project_name.setText(path.name or str(path)); self.file_paths = context_file_paths(path)
         if discovered_path is not None and discovered_path != requested_path:
             self._toast(f"已定位到项目根目录: {path}")
@@ -1121,7 +1529,81 @@ class MainWindow(QMainWindow):
         self._refresh_context()
         self._watch_timer.start()
 
+    def _clear_current_project(self) -> None:
+        self._has_project = False
+        self._watch_timer.stop()
+        self.current_status = None
+        self._project_load_message = ""
+        self._pending_external_changes = []
+        self.file_paths = {}
+        self.path_edit.setText("")
+        self._sync_path_switch_button()
+        self.project_name.setText("未加载项目")
+        self.delete_btn.setEnabled(False)
+        self.settings.setValue("project_path", "")
+        self.settings.sync()
+        self._refresh_recent_projects()
+        self._clear_views()
+
+    def _remove_from_recent_projects(self, path: Path) -> list[str]:
+        target_key = _norm_path_key(path)
+        paths = self.settings.value("recent_projects", [], type=list) or []
+        remaining: list[str] = []
+        seen: set[str] = set()
+        for item in paths:
+            text = str(item).strip()
+            key = _norm_path_key(text)
+            if not key or key == target_key or key in seen:
+                continue
+            seen.add(key)
+            remaining.append(text)
+        self.settings.setValue("recent_projects", remaining[:8])
+        self.settings.sync()
+        return remaining[:8]
+
+    def _delete_project(self) -> None:
+        if not self._require_project():
+            return
+        target = self.project_path
+        dialog = DeleteProjectDialog(target, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._execute_delete_project(
+            target,
+            delete_folder=dialog.delete_folder,
+            use_trash=dialog.use_trash,
+        )
+
+    def _execute_delete_project(self, target: Path, *, delete_folder: bool, use_trash: bool = True) -> bool:
+        if delete_folder:
+            self._watch_timer.stop()
+            try:
+                _delete_directory(target, use_trash=use_trash)
+            except (ContextError, OSError) as exc:
+                self._show_error(exc)
+                if self._has_project and (self.project_path / ".agent").is_dir():
+                    self._watch_timer.start()
+                return False
+
+        remaining = self._remove_from_recent_projects(target)
+        next_target = next((Path(item) for item in remaining if Path(item).exists()), None)
+        if next_target is None and remaining:
+            next_target = Path(remaining[0])
+        if next_target is not None:
+            self._set_project_path(next_target, persist=True)
+        else:
+            self._clear_current_project()
+
+        label = target.name or str(target)
+        if delete_folder:
+            self._toast(f"已删除项目文件夹（已移入回收站）: {label}" if use_trash else f"已永久删除项目文件夹: {label}")
+        else:
+            self._toast(f"已从软件中移除项目: {label}")
+        return True
+
     def _export_project(self) -> None:
+        if not self._require_project():
+            return
         try:
             output = export_project(self.project_path)
             QMessageBox.information(self, "导出成功", f"已导出到:\n{output}")
@@ -1149,8 +1631,20 @@ class MainWindow(QMainWindow):
 
     def _refresh_recent_projects(self) -> None:
         paths = self.settings.value("recent_projects", [], type=list) or []
-        current = str(self.project_path)
-        ordered = [current] + [str(item) for item in paths if str(item) != current]
+        ordered: list[str] = []
+        seen: set[str] = set()
+        if self._has_project:
+            current = str(self.project_path).strip()
+            if current:
+                ordered.append(current)
+                seen.add(_norm_path_key(current))
+        for item in paths:
+            text = str(item).strip()
+            key = _norm_path_key(text)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            ordered.append(text)
         self.recent_combo.blockSignals(True); self.recent_combo.clear()
         self.recent_combo.addItem("最近项目", "")
         for item in ordered[:8]:
@@ -1159,8 +1653,9 @@ class MainWindow(QMainWindow):
         self.recent_combo.setCurrentIndex(0); self.recent_combo.blockSignals(False)
 
     def _remember_project(self, path: Path) -> None:
-        current = str(path); paths = self.settings.value("recent_projects", [], type=list) or []
-        ordered = [current] + [str(item) for item in paths if str(item) != current]
+        current = str(path); current_key = _norm_path_key(current)
+        paths = self.settings.value("recent_projects", [], type=list) or []
+        ordered = [current] + [str(item) for item in paths if _norm_path_key(item) != current_key]
         self.settings.setValue("recent_projects", ordered[:8]); self._refresh_recent_projects()
 
     def _recent_project_selected(self, index: int) -> None:
@@ -1199,7 +1694,7 @@ class MainWindow(QMainWindow):
         return best_name, best_mtime
 
     def _watch_check(self) -> None:
-        if not (self.project_path / ".agent").is_dir() or not hasattr(self, "_file_mtimes"):
+        if not self._has_project or not (self.project_path / ".agent").is_dir() or not hasattr(self, "_file_mtimes"):
             return
         if self.checkpoint_thread is not None:
             return
@@ -1270,7 +1765,7 @@ class MainWindow(QMainWindow):
                 editor.setPlainText(read_utf8(self.file_paths[filename]))
                 editor.document().setModified(False)
             self._snapshot_file_mtimes()
-            self._update_overview(); self._refresh_archives(); self._resume(); self._refresh_changes()
+            self._update_overview(); self._refresh_archives(); self._resume(); self._refresh_changes(); self._update_archive_todo_buttons()
             if skipped:
                 names = "、".join(skipped)
                 self._toast(f"已保留未保存的修改，未从磁盘重载: {names}")
@@ -1306,7 +1801,16 @@ class MainWindow(QMainWindow):
         if hasattr(self, "changes_view"):
             self.changes_view.clear(); self.changes_view.setExtraSelections([])
             self.changes_summary.setText("")
-        self.resume_view.clear(); self.doctor_list.clear(); self._update_overview()
+        self.resume_view.clear(); self.doctor_list.clear()
+        if hasattr(self, "archive_list"):
+            self.archive_list.blockSignals(True); self.archive_list.clear(); self.archive_list.blockSignals(False)
+            self.archive_preview.clear(); self.archive_preview_title.setText("")
+            self.archive_copy_btn.setEnabled(False); self.archive_open_btn.setEnabled(False)
+            self.checkpoint_result.setText("尚未创建检查点")
+        if hasattr(self, "doctor_summary"):
+            self.doctor_summary.setText("请先选择一个项目目录" if not self._has_project else "点击「运行健康检查」查看项目体检结果")
+        self._update_archive_todo_buttons()
+        self._update_overview()
 
     def _clear_overview_layout(self) -> None:
         """Remove old overview widgets before rebuilding the page after a refresh."""
@@ -1330,6 +1834,9 @@ class MainWindow(QMainWindow):
                 child_layout.deleteLater()
 
     def _recent_change_summary(self) -> list[tuple]:
+        if not self._has_project:
+            self._recent_changes = []
+            return []
         try:
             self._recent_changes = recent_changes(self.project_path)
         except (ContextError, OSError):
@@ -1341,7 +1848,8 @@ class MainWindow(QMainWindow):
         status = self.current_status
         stats = getattr(self, "_current_token_stats", None)
         return (
-            str(self.project_path), self.theme_mode, tuple(self._pending_external_changes),
+            self._has_project, str(self.project_path) if self._has_project else "",
+            self.theme_mode, tuple(self._pending_external_changes),
             self._project_load_message,
             None if status is None else (
                 status.phase, status.task, status.p0_count, status.p1_count, status.p2_count,
@@ -1364,7 +1872,7 @@ class MainWindow(QMainWindow):
         self.checkpoint_buttons = []
         status = self.current_status
         if not status:
-            initialized = (self.project_path / ".agent").is_dir()
+            initialized = self._has_project and (self.project_path / ".agent").is_dir()
             empty = self._card()
             l = QVBoxLayout(empty)
             l.setContentsMargins(24, 24, 24, 24)
@@ -1401,15 +1909,22 @@ class MainWindow(QMainWindow):
                 intro.setWordWrap(True)
                 l.addWidget(intro)
                 empty_actions = QHBoxLayout()
-                b = QPushButton("初始化项目")
-                b.setIcon(icon("folder"))
-                b.clicked.connect(self._init_project)
-                empty_actions.addWidget(b)
-                bp = QPushButton("复制填充提示词")
-                bp.setIcon(icon("copy"))
-                bp.setToolTip("复制让 Agent 扫描项目并填充 .agent 文件的提示词")
-                bp.clicked.connect(self._copy_bootstrap_prompt)
-                empty_actions.addWidget(bp)
+                if not self._has_project:
+                    pick = QPushButton("选择项目目录")
+                    pick.setObjectName("primary")
+                    pick.setIcon(icon("folder", "#FFFFFF"))
+                    pick.clicked.connect(self._browse_project)
+                    empty_actions.addWidget(pick)
+                else:
+                    b = QPushButton("初始化项目")
+                    b.setIcon(icon("folder"))
+                    b.clicked.connect(self._init_project)
+                    empty_actions.addWidget(b)
+                    bp = QPushButton("复制填充提示词")
+                    bp.setIcon(icon("copy"))
+                    bp.setToolTip("复制让 Agent 扫描项目并填充 .agent 文件的提示词")
+                    bp.clicked.connect(self._copy_bootstrap_prompt)
+                    empty_actions.addWidget(bp)
                 empty_actions.addStretch()
                 l.addLayout(empty_actions)
             self.overview_grid.addWidget(empty)
@@ -1548,7 +2063,7 @@ class MainWindow(QMainWindow):
             editor.document().setModified(False)
             record_version(self.project_path, filename, source="save")
             self._snapshot_file_mtimes()
-            self._apply_editor_marks(filename); self._refresh_changes(); self._update_overview(force=True)
+            self._apply_editor_marks(filename); self._refresh_changes(); self._update_archive_todo_buttons(); self._update_overview(force=True)
             self._toast(f"已保存 {filename}")
         except (ContextError, OSError) as exc: self._show_error(exc)
 
@@ -1565,6 +2080,7 @@ class MainWindow(QMainWindow):
             self._apply_editor_marks(); self._refresh_changes(); self._update_overview(force=True)
 
     def _init_project(self) -> None:
+        if not self._require_project(): return
         try:
             result = init_project(self.project_path)
             # init succeeded, so any "no .agent folder" / "STATE.md needs repair"
@@ -1578,6 +2094,7 @@ class MainWindow(QMainWindow):
         except (ContextError, OSError) as exc: self._show_error(exc)
 
     def _checkpoint(self) -> None:
+        if not self._require_project(): return
         if self.checkpoint_thread is not None: return
         try: self._save_all_context()
         except (ContextError, OSError) as exc: self._show_error(exc); return
@@ -1597,8 +2114,12 @@ class MainWindow(QMainWindow):
     def _checkpoint_finished(self, summary: object) -> None:
         self._pending_external_changes = []
         archive_path = getattr(summary, "archive_path", None)
-        label = f"已保存  {archive_path.name}" if archive_path is not None else "已保存（配置关闭了 archive_enabled，未写归档）"
-        self._refresh_context(); self.checkpoint_result.setText(label); self._toast("Checkpoint 已保存")
+        self._refresh_context()
+        if archive_path is not None and hasattr(self, "archive_list") and self.archive_list.count() > 0:
+            self.archive_list.setCurrentRow(0)
+        elif archive_path is None:
+            self.checkpoint_result.setText("已保存（配置关闭了 archive_enabled，未写归档）")
+        self._toast("Checkpoint 已保存")
 
     @Slot(object)
     def _checkpoint_failed(self, error: object) -> None:
@@ -1610,17 +2131,20 @@ class MainWindow(QMainWindow):
         self.checkpoint_worker = None; self.checkpoint_thread = None; self._set_checkpoint_busy(False)
 
     def _resume(self) -> None:
+        if not self._has_project: self.resume_view.clear(); return
         try: self.resume_view.setPlainText(build_agent_prompt(self.project_path))
         except (ContextError, OSError): self.resume_view.clear()
     def _copy_resume(self) -> None:
         if self.resume_view.toPlainText(): QApplication.clipboard().setText(self.resume_view.toPlainText()); self._toast("恢复上下文已复制")
 
     def _copy_bootstrap_prompt(self) -> None:
+        if not self._require_project(): return
         QApplication.clipboard().setText(build_context_bootstrap_prompt(self.project_path))
         self._toast("填充提示词已复制")
 
     def _repair_context(self) -> None:
         """Rewrite STATE.md/TODO.md into the protocol structure without losing content."""
+        if not self._require_project(): return
         try:
             report = repair_project(self.project_path)
         except (ContextError, OSError) as exc:
@@ -1643,17 +2167,248 @@ class MainWindow(QMainWindow):
         else:
             self._toast("无需修复，两个文件都已符合协议")
 
+    def _update_archive_todo_buttons(self) -> None:
+        count = 0
+        if self._has_project:
+            todo_path = self.file_paths.get("TODO.md")
+            if todo_path is not None and todo_path.exists():
+                try:
+                    count = count_completed_todos(read_utf8(todo_path))
+                except (ContextError, OSError):
+                    count = 0
+        show = self._has_project and count > 0
+        label = f"归档已完成待办 ({count})"
+        for btn_name in ("doctor_archive_btn", "todo_archive_btn"):
+            btn = getattr(self, btn_name, None)
+            if btn is not None:
+                btn.setText(label)
+                btn.setVisible(show)
+                btn.setEnabled(show)
+
+    def _archive_completed_todos(self) -> None:
+        if not self._require_project(): return
+        try:
+            self._save_all_context()
+            report = archive_completed_todos(self.project_path)
+        except (ContextError, OSError) as exc:
+            self._show_error(exc); return
+        if report.archived_count == 0:
+            self._update_archive_todo_buttons()
+            self._toast("TODO.md 中没有可归档的已完成项（- [x]）")
+            return
+        self._refresh_context()
+        self._doctor()
+        self._toast(f"已将 {report.archived_count} 条已完成待办归档到 CHANGELOG.md（TODO {report.todo_lines_before} → {report.todo_lines_after} 行）")
+        box = QMessageBox(self)
+        box.setWindowTitle("归档完成")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(
+            f"已将 {report.archived_count} 条已完成待办移入 .agent/CHANGELOG.md\n"
+            f"TODO.md 行数：{report.todo_lines_before} → {report.todo_lines_after} 行"
+        )
+        box.setInformativeText("归档前后已自动记录版本快照，随时可在 Changes 页查看改动或恢复。")
+        open_btn = box.addButton("查看 CHANGELOG.md", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("好的", QMessageBox.ButtonRole.AcceptRole)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            self._navigate_by_key("changelog")
+
+    def _doctor_item_activated(self, item: QListWidgetItem) -> None:
+        target = item.data(Qt.ItemDataRole.UserRole)
+        if not target or not self._has_project:
+            return
+        if target == "__agents__":
+            agents_path = self.project_path / "AGENTS.md"
+            if not agents_path.exists():
+                self._toast("AGENTS.md 尚不存在")
+                return
+            editor = load_config().get("default_editor")
+            try:
+                if editor:
+                    subprocess.Popen([str(editor), str(agents_path)])
+                elif hasattr(os, "startfile"):
+                    os.startfile(str(agents_path))  # type: ignore[attr-defined]
+            except OSError as exc:
+                self._show_error(exc)
+            return
+        self._navigate_by_key(str(target))
+
     def _doctor(self) -> None:
         self.doctor_list.clear()
+        self._update_archive_todo_buttons()
+        if not self._has_project:
+            self.doctor_summary.setText("请先选择一个项目目录")
+            return
         try:
-            for check in run_doctor(self.project_path):
-                item = QListWidgetItem(("✓  " if check.ok else "!  ") + f"{check.name}   {check.detail}"); item.setIcon(icon("check" if check.ok else "warning")); self.doctor_list.addItem(item)
-        except (ContextError, OSError) as exc: self._show_error(exc)
+            checks = run_doctor(self.project_path)
+        except (ContextError, OSError) as exc:
+            self._show_error(exc); return
+
+        c = getattr(self, "_palette", None) or {}
+        dark = c.get("bg", "").upper() == "#1C1C1E"
+        ok_color = "#4CC38A" if dark else "#2E9E5B"
+        warn_color = "#F0A04B" if dark else "#D9822B"
+        err_color = "#E5534B" if dark else "#D93025"
+
+        # Surface errors and warnings at the top so issues never hide below passing checks.
+        def _rank(chk) -> int:
+            if chk.ok:
+                return 2
+            return 0 if chk.severity == "error" else 1
+
+        ordered = sorted(checks, key=_rank)
+        errors = sum(1 for chk in checks if not chk.ok and chk.severity == "error")
+        warnings = sum(1 for chk in checks if not chk.ok and chk.severity != "error")
+        if errors == 0 and warnings == 0:
+            self.doctor_summary.setText(f"全部 {len(checks)} 项健康检查通过（双击文件项可直接跳转编辑）")
+        else:
+            parts: list[str] = []
+            if errors:
+                parts.append(f"{errors} 个错误")
+            if warnings:
+                parts.append(f"{warnings} 个警告")
+            self.doctor_summary.setText(f"发现 {'、'.join(parts)}，共 {len(checks)} 项检查（异常项已置顶，双击文件项可跳转编辑）")
+
+        for check in ordered:
+            label = _DOCTOR_LABELS.get(check.name, check.name)
+            text = f"{label}   {check.detail}"
+            if not check.ok:
+                suggestion = _DOCTOR_SUGGESTIONS_ZH.get(check.name) or check.suggestion
+                if suggestion:
+                    text += f"\n建议：{suggestion}"
+            item = QListWidgetItem(text)
+            if check.ok:
+                item.setIcon(icon("check", ok_color))
+            elif check.severity == "error":
+                item.setIcon(icon("warning", err_color))
+            else:
+                item.setIcon(icon("warning", warn_color))
+            target = _DOCTOR_TARGETS.get(check.name)
+            if target:
+                item.setData(Qt.ItemDataRole.UserRole, target)
+                tip = f"双击跳转编辑 {check.name}" if target != "__agents__" else "双击用外部编辑器打开 AGENTS.md"
+                if not check.ok and check.suggestion:
+                    tip += f"\n{_DOCTOR_SUGGESTIONS_ZH.get(check.name) or check.suggestion}"
+                item.setToolTip(tip)
+            elif not check.ok and check.suggestion:
+                item.setToolTip(_DOCTOR_SUGGESTIONS_ZH.get(check.name) or check.suggestion)
+            self.doctor_list.addItem(item)
+
+    @staticmethod
+    def _format_archive_label(filename: str) -> str:
+        match = re.match(r"^checkpoint-(\d{4}-\d{2}-\d{2})-(\d{2})(\d{2})(\d{2})(?:-(\d+))?\.md$", filename)
+        if not match:
+            return filename
+        date_part, hh, mm, ss, seq = match.groups()
+        suffix = f" (#{seq})" if seq else ""
+        return f"{date_part} {hh}:{mm}:{ss}{suffix}"
 
     def _refresh_archives(self) -> None:
         self.archive_items = []
-        try: self.archive_items = list_archives(self.project_path)
-        except (ContextError, OSError): pass
+        if not self._has_project:
+            if hasattr(self, "archive_list"):
+                self.archive_list.clear()
+                self.archive_preview.clear()
+                self.archive_preview_title.setText("")
+                self.archive_copy_btn.setEnabled(False)
+                self.archive_open_btn.setEnabled(False)
+                self.checkpoint_result.setText("请先选择一个项目目录")
+            return
+        try:
+            self.archive_items = list_archives(self.project_path)
+        except (ContextError, OSError):
+            self.archive_items = []
+        if not hasattr(self, "archive_list"):
+            return
+        prev_name = None
+        cur_item = self.archive_list.currentItem()
+        if cur_item is not None:
+            prev_name = cur_item.data(Qt.ItemDataRole.UserRole)
+        self.archive_list.blockSignals(True)
+        self.archive_list.clear()
+        newest_first = list(reversed(self.archive_items))
+        selected_row = 0
+        for row, entry in enumerate(newest_first):
+            name = entry.path.name
+            item = QListWidgetItem(self._format_archive_label(name))
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            item.setToolTip(str(entry.path))
+            self.archive_list.addItem(item)
+            if name == prev_name:
+                selected_row = row
+        self.archive_list.blockSignals(False)
+        if newest_first:
+            latest_label = self._format_archive_label(newest_first[0].path.name)
+            self.checkpoint_result.setText(f"共 {len(newest_first)} 份历史快照 · 最新：{latest_label}")
+            self.archive_list.setCurrentRow(selected_row)
+            self._archive_selected(selected_row)
+        else:
+            self.checkpoint_result.setText("尚未创建检查点")
+            self.archive_preview.clear()
+            self.archive_preview_title.setText("")
+            self.archive_copy_btn.setEnabled(False)
+            self.archive_open_btn.setEnabled(False)
+
+    def _archive_selected(self, row: int) -> None:
+        if row < 0 or row >= self.archive_list.count() or not self._has_project:
+            self.archive_preview.clear()
+            self.archive_preview_title.setText("")
+            self.archive_copy_btn.setEnabled(False)
+            self.archive_open_btn.setEnabled(False)
+            return
+        item = self.archive_list.item(row)
+        name = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if not name:
+            return
+        try:
+            content = read_archive(self.project_path, name)
+        except (ContextError, OSError) as exc:
+            self.archive_preview.setPlainText(f"无法读取快照：{exc}")
+            self.archive_preview_title.setText(name)
+            self.archive_copy_btn.setEnabled(False)
+            self.archive_open_btn.setEnabled(False)
+            return
+        self.archive_preview.setPlainText(content)
+        self.archive_preview_title.setText(name)
+        self.archive_copy_btn.setEnabled(True)
+        self.archive_open_btn.setEnabled(True)
+
+    def _copy_archive_preview(self) -> None:
+        text = self.archive_preview.toPlainText()
+        if text:
+            QApplication.clipboard().setText(text)
+            self._toast("快照内容已复制")
+
+    def _open_selected_archive(self) -> None:
+        item = self.archive_list.currentItem()
+        if item is None or not self._has_project:
+            return
+        name = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        path = self.project_path / ".agent" / "archive" / name
+        if not path.exists():
+            self._toast("快照文件不存在")
+            return
+        editor = load_config().get("default_editor")
+        try:
+            if editor:
+                subprocess.Popen([str(editor), str(path)])
+            elif hasattr(os, "startfile"):
+                os.startfile(str(path))  # type: ignore[attr-defined]
+        except OSError as exc:
+            self._show_error(exc)
+
+    def _open_archive_dir(self) -> None:
+        if not self._require_project():
+            return
+        directory = self.project_path / ".agent" / "archive"
+        if not directory.exists():
+            self._toast("当前项目还没有 .agent/archive 目录")
+            return
+        try:
+            if hasattr(os, "startfile"):
+                os.startfile(str(directory))  # type: ignore[attr-defined]
+        except OSError as exc:
+            self._show_error(exc)
     def _update_dirty_label(self) -> None:
         for editor in self.editors.values(): editor.dirty_label.setText("未保存修改" if editor.document().isModified() else "")
     def _open_in_editor(self, filename: str) -> None:

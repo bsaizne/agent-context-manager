@@ -52,7 +52,7 @@ Before starting work:
 1. Read `.agent/STATE.md`.
 2. Read `.agent/TODO.md`.
 3. Read `.agent/INDEX.md` only when necessary.
-4. Do not read `.agent/archive/` unless explicitly required.
+4. Do not read `.agent/CHANGELOG.md` or `.agent/archive/` in full at session start.
 5. Do not read the entire project automatically.
 
 ## Working Rules
@@ -60,6 +60,9 @@ Before starting work:
 - Treat source code as the source of truth.
 - Do not copy large code blocks into context documents.
 - Do not rewrite completed work without a reason.
+- Keep `.agent/STATE.md` concise (within the configured line limit, default 120 lines): keep only current state and the latest 3-5 completed milestones, moving older details to `.agent/CHANGELOG.md` and durable choices to `.agent/DECISIONS.md`.
+- Keep `.agent/TODO.md` for pending tasks (within the configured line limit, default 100 lines); archive completed items into `.agent/CHANGELOG.md` with their original keywords.
+- Before adding a feature, changing existing behavior, or fixing a recurring bug, search (grep) `.agent/CHANGELOG.md` and `.agent/DECISIONS.md` by keyword to avoid duplicate work.
 - Respect existing architectural decisions.
 - Check `.agent/DECISIONS.md` before reversing an important decision.
 - Update project state after major milestones.

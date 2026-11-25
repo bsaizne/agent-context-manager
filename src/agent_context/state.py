@@ -6,7 +6,8 @@ import re
 from typing import Callable
 
 from .project import context_file_paths, require_initialized_project
-from .utils import ContextError, extract_heading_by_prefix, extract_section, now_text, read_utf8, update_section, write_utf8
+from .utils import ContextError, extract_heading_by_prefix, extract_section, now_text, read_utf8, today_text, update_section, write_utf8
+from .versions import record_version
 
 REQUIRED_STATE_SECTIONS = [
     "Project",
@@ -322,4 +323,161 @@ def repair_project(project_path: Path) -> RepairReport:
         todo_heading_added=todo_heading_added,
         todo_changed=todo_changed,
         todo_duplicate_sections=todo_duplicates,
+    )
+
+
+_COMPLETED_TODO_RE = re.compile(r"^([ \t]*)-[ \t]+\[[xX]\](?:[ \t]+(.*))?$")
+
+
+@dataclass(frozen=True)
+class ArchiveTodosReport:
+    project_path: Path
+    archived_count: int
+    archived_items: list[str]
+    todo_lines_before: int
+    todo_lines_after: int
+
+
+def count_completed_todos(todo_text: str) -> int:
+    """Count checked (- [x] / - [X]) top-level task entries in TODO.md."""
+    return sum(
+        1
+        for line in todo_text.replace("\r\n", "\n").split("\n")
+        if _COMPLETED_TODO_RE.match(line)
+    )
+
+
+def _split_completed_todos(todo_text: str) -> tuple[str, list[tuple[str, list[str]]]]:
+    """Split checked task entries (including indented sub-lines) out of TODO.md.
+
+    Returns (remaining_todo_text, archived_entries) where each archived entry is
+    (section_label, raw_lines).
+    """
+    lines = todo_text.replace("\r\n", "\n").split("\n")
+    kept: list[str] = []
+    archived: list[tuple[str, list[str]]] = []
+    current_section = ""
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        heading = re.match(r"^##[ \t]+(.+?)[ \t]*$", line)
+        if heading:
+            current_section = todo_section_key(heading.group(1))
+            kept.append(line)
+            i += 1
+            continue
+        match = _COMPLETED_TODO_RE.match(line)
+        if match:
+            base_indent = len(match.group(1).expandtabs(4))
+            body = (match.group(2) or "").strip()
+            entry_lines = [body] if body else []
+            i += 1
+            # Carry any deeper-indented continuation or sub-bullet lines with the task
+            # so archiving never leaves orphaned indented fragments behind in TODO.md.
+            while i < len(lines):
+                nxt = lines[i]
+                if not nxt.strip():
+                    # Look ahead: only swallow a blank line if followed by a deeper-indented line.
+                    if i + 1 < len(lines):
+                        after = lines[i + 1]
+                        after_indent = len(after[: len(after) - len(after.lstrip(" \t"))].expandtabs(4))
+                        if after.strip() and after_indent > base_indent:
+                            entry_lines.append("")
+                            i += 1
+                            continue
+                    break
+                nxt_indent = len(nxt[: len(nxt) - len(nxt.lstrip(" \t"))].expandtabs(4))
+                if nxt_indent > base_indent:
+                    entry_lines.append(nxt.rstrip())
+                    i += 1
+                else:
+                    break
+            if entry_lines:
+                archived.append((current_section, entry_lines))
+            continue
+        kept.append(line)
+        i += 1
+
+    # Collapse runs of 3+ blank lines left behind where completed blocks were removed.
+    cleaned: list[str] = []
+    blank_run = 0
+    for line in kept:
+        if not line.strip():
+            blank_run += 1
+            if blank_run <= 1:
+                cleaned.append("")
+        else:
+            blank_run = 0
+            cleaned.append(line)
+    remaining = "\n".join(cleaned).rstrip() + "\n"
+    return remaining, archived
+
+
+def _append_archived_todos_to_changelog(changelog_text: str, entries: list[tuple[str, list[str]]]) -> str:
+    """Append archived TODO entries to CHANGELOG.md under today's archive heading.
+
+    Each entry preserves its original priority tag and wording so an agent can
+    find prior completed work with a single keyword grep instead of reading the
+    whole changelog.
+    """
+    text = changelog_text.replace("\r\n", "\n")
+    if "No changes recorded yet." in text:
+        text = text.replace("No changes recorded yet.", "").rstrip()
+
+    formatted: list[str] = []
+    for section, entry_lines in entries:
+        prefix = f"[{section}] " if section else ""
+        formatted.append(f"- {prefix}{entry_lines[0]}")
+        for extra in entry_lines[1:]:
+            formatted.append(f"  {extra}" if extra else "")
+    block = "\n".join(formatted)
+
+    heading = f"## {today_text()}（已完成待办归档）"
+    if heading in text:
+        start = text.index(heading)
+        next_h = text.find("\n## ", start + len(heading))
+        if next_h == -1:
+            return text.rstrip() + "\n" + block + "\n"
+        return text[:next_h].rstrip() + "\n" + block + "\n" + text[next_h:]
+
+    return text.rstrip() + f"\n\n{heading}\n\n{block}\n"
+
+
+def archive_completed_todos(project_path: Path) -> ArchiveTodosReport:
+    """Move checked (- [x]) items from TODO.md into CHANGELOG.md with version snapshots."""
+    require_initialized_project(project_path)
+    paths = context_file_paths(project_path)
+    todo_path = paths["TODO.md"]
+    changelog_path = paths["CHANGELOG.md"]
+
+    todo_text = read_utf8(todo_path)
+    lines_before = len(todo_text.splitlines())
+    remaining, archived = _split_completed_todos(todo_text)
+    if not archived:
+        return ArchiveTodosReport(
+            project_path=project_path,
+            archived_count=0,
+            archived_items=[],
+            todo_lines_before=lines_before,
+            todo_lines_after=lines_before,
+        )
+
+    changelog_text = read_utf8(changelog_path) if changelog_path.exists() else "# CHANGELOG\n"
+    updated_changelog = _append_archived_todos_to_changelog(changelog_text, archived)
+
+    # Snapshot before and after so the Changes page shows the exact lines archived.
+    record_version(project_path, "TODO.md", source="archive-todo")
+    record_version(project_path, "CHANGELOG.md", source="archive-todo")
+    write_utf8(todo_path, remaining)
+    write_utf8(changelog_path, updated_changelog)
+    record_version(project_path, "TODO.md", source="archive-todo")
+    record_version(project_path, "CHANGELOG.md", source="archive-todo")
+
+    lines_after = len(remaining.splitlines())
+    return ArchiveTodosReport(
+        project_path=project_path,
+        archived_count=len(archived),
+        archived_items=[entry_lines[0] for _, entry_lines in archived],
+        todo_lines_before=lines_before,
+        todo_lines_after=lines_after,
     )

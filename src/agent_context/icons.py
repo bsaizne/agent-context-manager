@@ -136,6 +136,15 @@ def _draw_icon(painter: QPainter, name: str) -> None:
         painter.drawLine(11, 8, 13, 8)
         painter.drawLine(12, 7, 12, 9)
         painter.drawLine(11, 16, 13, 16)
+    elif name == "trash":
+        # Lid + handle + bin body for removing or deleting a project.
+        painter.drawLine(4, 7, 20, 7)
+        painter.drawLine(9, 7, 9, 5)
+        painter.drawLine(9, 5, 15, 5)
+        painter.drawLine(15, 5, 15, 7)
+        painter.drawRoundedRect(6, 7, 12, 13, 2, 2)
+        painter.drawLine(10, 11, 10, 16)
+        painter.drawLine(14, 11, 14, 16)
     else:
         # Unknown names must degrade to a plain circle, never to a crash.
         painter.drawEllipse(5, 5, 14, 14)
