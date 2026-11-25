@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-11-25
+
+### Added
+
+- **Project deletion dialog** (`DeleteProjectDialog`): remove a project only from the app's workspace/recent list (safe default) or delete the entire project folder (moves to the system Recycle Bin by default via `QFile.moveToTrash`, with folder-name confirmation and protected-directory guards).
+- **One-click archive of completed TODOs** (`archive_completed_todos`): move checked `- [x]` items (and their indented sub-lines) from `.agent/TODO.md` into `.agent/CHANGELOG.md` under a dated archive section while preserving priority tags and keywords for grep lookup, recording version snapshots before and after.
+- **Checkpoint history viewer**: the Checkpoint page now lists all `.agent/archive/checkpoint-*.md` snapshots newest-first with a read-only Markdown preview, copy button, and external open / archive folder actions.
+- **Settings line-limit controls**: configure `max_state_lines` and `max_todo_lines` directly in the GUI Settings page (with scroll container and restored Appearance card).
+- **Automatic Resume maintenance note**: `build_resume()` dynamically appends a lightweight `Maintenance:` reminder whenever `STATE.md` or `TODO.md` exceeds its configured line limit, covering existing projects without modifying their `AGENTS.md`; `AGENTS.md` template also documents line-limit upkeep and keyword-grep deduplication before starting work.
+
+### Changed
+
+- **Topbar project picker**: removed the redundant permanent "Open" button, renamed "Browse" to "选择目录", and show a primary "切换" button only when the path input differs from the loaded project.
+- **Doctor page**: auto-runs on page entry, sorts errors and warnings to the top with Chinese labels and actionable suggestions, removes the duplicate `✓` prefix, supports double-click navigation to context editors, and shows the archive button only when completed `- [x]` items exist.
+
+### Fixed
+
+- Styled `QListWidget` hover/selected states so selected rows in Checkpoint and Doctor remain readable instead of being obscured by native Windows highlight colors.
+- Added explicit `QPushButton:disabled` styling so disabled buttons are visibly muted.
+
 ## [0.9.1] - 2026-11-21
 
 ### Added
